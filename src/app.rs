@@ -42,6 +42,7 @@ pub struct SnapApp {
     show_settings: bool,
     show_permission: bool,
     confirm_delete: Option<String>,
+    overlay_fix_frames: u8,
 }
 
 pub const HOTKEYS: [(Code, CaptureKind, &str); 4] = [
@@ -78,6 +79,7 @@ impl SnapApp {
             show_settings: false,
             show_permission: false,
             confirm_delete: None,
+            overlay_fix_frames: 0,
         };
         // `snapit bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
@@ -126,8 +128,9 @@ impl SnapApp {
         platform::set_overlay_level(frame, false);
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         if let Some((pos, size)) = self.saved_window.take() {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+            // Erst Größe, dann Position: macOS rechnet die Position mit der aktuellen Höhe um.
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -150,8 +153,9 @@ impl SnapApp {
                 self.phase = Phase::Overlay(Box::new(Overlay::new(ctx, grab)));
                 platform::set_overlay_level(frame, true);
                 ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
-                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(origin));
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(origin));
+                self.overlay_fix_frames = 4;
                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
@@ -485,7 +489,19 @@ impl SnapApp {
                 ui.label("Ohne sie liefert macOS nur das Hintergrundbild – ohne Fenster.");
                 ui.add_space(6.0);
                 ui.label("1. Einstellungen öffnen und SnapIt aktivieren");
+                ui.label("   (steht SnapIt schon drin: mit − entfernen und neu hinzufügen)");
                 ui.label("2. SnapIt beenden und neu starten");
+                let (preflight, titles) = platform::screen_capture_diag();
+                ui.add_space(4.0);
+                ui.weak(format!(
+                    "Status: Systemprüfung {} · Fenstertitel lesbar {} · App: {}",
+                    if preflight { "✔" } else { "✘" },
+                    if titles { "✔" } else { "✘" },
+                    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
+                ));
+                if ui.button("Erneut prüfen").clicked() && (preflight || titles) {
+                    self.show_permission = false;
+                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Einstellungen öffnen").clicked() {
@@ -573,6 +589,12 @@ impl eframe::App for SnapApp {
 
         self.poll_capture(ctx, frame);
         if let Phase::Overlay(ov) = &mut self.phase {
+            // Geometrie in den ersten Frames nachziehen, bis das Fenster exakt den Monitor deckt.
+            if self.overlay_fix_frames > 0 {
+                self.overlay_fix_frames -= 1;
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(ov.grab.size));
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(ov.grab.origin));
+            }
             match ov.ui(ctx) {
                 OverlayResult::Pending => {}
                 OverlayResult::Cancel => {

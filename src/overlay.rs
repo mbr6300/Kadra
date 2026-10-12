@@ -17,6 +17,8 @@ pub enum OverlayResult {
 pub struct Overlay {
     pub grab: Grab,
     texture: TextureHandle,
+    /// Startpunkt eines laufenden Ziehens (lokale Koordinaten).
+    drag_start: Option<Pos2>,
 }
 
 const ACCENT: Color32 = Color32::from_rgb(255, 120, 30);
@@ -26,7 +28,7 @@ impl Overlay {
         let img = &grab.image;
         let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
         let texture = ctx.load_texture("overlay", color, TextureOptions::NEAREST);
-        Self { grab, texture }
+        Self { grab, texture, drag_start: None }
     }
 
     fn window_at(&self, p: Pos2) -> Option<&capture::WinInfo> {
@@ -51,17 +53,21 @@ impl Overlay {
 
             let to_local = |p: Pos2| (p - full.min).to_pos2();
             let to_screen = |r: Rect| r.translate(full.min.to_vec2());
-            let cursor = ctx.input(|i| i.pointer.hover_pos()).map(to_local);
-            let press = ctx.input(|i| i.pointer.press_origin()).map(to_local);
+            let (cursor, pressed, released) = ctx.input(|i| {
+                (i.pointer.latest_pos().map(to_local), i.pointer.primary_pressed(), i.pointer.primary_released())
+            });
             let region_mode = self.grab.kind == CaptureKind::Region;
 
-            let dragging = region_mode
-                && resp.dragged()
-                && press.zip(cursor).is_some_and(|(a, b)| (a - b).length() > 4.0);
+            // Ziehen selbst verfolgen: beim Loslassen ist `dragged()` bereits false.
+            if pressed && resp.hovered() {
+                self.drag_start = cursor;
+            }
+            let drag = self.drag_start.zip(cursor);
+            let dragging = region_mode && drag.is_some_and(|(a, b)| (a - b).length() > 4.0);
             let hovered_win = cursor.and_then(|c| self.window_at(c)).cloned();
 
             let selection: Option<Rect> = if dragging {
-                press.zip(cursor).map(|(a, b)| Rect::from_two_pos(a, b))
+                drag.map(|(a, b)| Rect::from_two_pos(a, b))
             } else {
                 hovered_win.as_ref().map(|w| w.rect.intersect(Rect::from_min_size(Pos2::ZERO, self.grab.size)))
             };
@@ -120,12 +126,12 @@ impl Overlay {
             );
             painter.galley(pos, galley, Color32::WHITE);
 
-            if resp.drag_stopped() && dragging {
-                if let Some(img) = selection.and_then(|s| self.grab.crop(s)) {
-                    result = OverlayResult::Done(img);
-                }
-            } else if resp.clicked() || (resp.drag_stopped() && !dragging) {
-                if let Some(w) = hovered_win {
+            if released && self.drag_start.take().is_some() {
+                if dragging {
+                    if let Some(img) = selection.and_then(|s| self.grab.crop(s)) {
+                        result = OverlayResult::Done(img);
+                    }
+                } else if let Some(w) = hovered_win {
                     // Ausschnitt aus dem eingefrorenen Bild = genau das, was sichtbar war.
                     if let Some(img) = self.grab.crop(w.rect) {
                         result = OverlayResult::Done(img);

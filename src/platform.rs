@@ -42,9 +42,26 @@ unsafe extern "C" {
 }
 
 /// Hat die App die Berechtigung „Bildschirmaufnahme“?
+/// CGPreflight… cached das Ergebnis teils bis zum Neustart, daher zusätzlich prüfen,
+/// ob Fenstertitel fremder Apps lesbar sind (geht nur mit Berechtigung).
 #[cfg(target_os = "macos")]
 pub fn screen_capture_allowed() -> bool {
-    unsafe { CGPreflightScreenCaptureAccess() }
+    let (preflight, titles) = screen_capture_diag();
+    preflight || titles
+}
+
+/// (CGPreflightScreenCaptureAccess, Fenstertitel fremder Apps sichtbar)
+#[cfg(target_os = "macos")]
+pub fn screen_capture_diag() -> (bool, bool) {
+    let own = std::process::id();
+    let preflight = unsafe { CGPreflightScreenCaptureAccess() };
+    let titles = list_windows().iter().any(|w| w.pid != own && !w.title.is_empty());
+    (preflight, titles)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn screen_capture_diag() -> (bool, bool) {
+    (true, true)
 }
 
 /// Zeigt den System-Dialog (nur beim ersten Mal) und trägt die App in die Liste ein.
