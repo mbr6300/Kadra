@@ -27,7 +27,8 @@ pub struct Overlay {
     message: Option<String>,
 }
 
-const ACCENT: Color32 = crate::ui_kit::ORANGE;
+/// Auf dem abgedunkelten Bildschirm die hellere Variante, damit Rahmen gut sichtbar sind.
+const ACCENT: Color32 = crate::ui_kit::ORANGE_LIGHT;
 
 impl Overlay {
     pub fn new(ctx: &egui::Context, grab: Grab) -> Self {

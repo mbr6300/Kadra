@@ -2,9 +2,16 @@
 
 use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
-/// SnapIt-Signaturfarbe.
-pub const ORANGE: Color32 = Color32::from_rgb(232, 98, 26);
-pub const ORANGE_HOVER: Color32 = Color32::from_rgb(246, 118, 44);
+/// SnapIt-Signaturfarbe als Fläche (weiße Schrift darauf ≈ 4,8 : 1 Kontrast).
+pub const ORANGE: Color32 = Color32::from_rgb(186, 82, 40);
+pub const ORANGE_HOVER: Color32 = Color32::from_rgb(200, 92, 48);
+/// Hellere Variante für orange Linien/Symbole auf dunklem Grund.
+pub const ORANGE_LIGHT: Color32 = Color32::from_rgb(232, 138, 94);
+
+/// Orange für Vordergrund (Symbole, Rahmen) passend zum Hell-/Dunkelmodus.
+pub fn accent_fg(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode { ORANGE_LIGHT } else { ORANGE }
+}
 
 pub const BAR_HEIGHT: f32 = 64.0;
 pub const TOOL_WIDTH: f32 = 62.0;
@@ -26,6 +33,7 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
     if !ui.is_rect_visible(rect) {
         return resp;
     }
+    let accent = accent_fg(ui);
     let v = ui.visuals();
     let hovered = enabled && resp.hovered();
     let (bg, fg, icon_col) = match look {
@@ -48,7 +56,7 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
             } else {
                 None
             };
-            (bg, fg, if selected && enabled { ORANGE } else { fg })
+            (bg, fg, if selected && enabled { accent } else { fg })
         }
     };
     let p = ui.painter();
@@ -56,7 +64,7 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
         p.rect_filled(rect, CornerRadius::same(7), bg);
     }
     if let Look::Tool { selected: true } = look {
-        p.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, ORANGE.gamma_multiply(0.6)), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, accent.gamma_multiply(0.6)), StrokeKind::Inside);
     }
     p.text(rect.center_top() + Vec2::new(0.0, 19.0), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
     let text = if menu { format!("{label} ▾") } else { label.to_string() };

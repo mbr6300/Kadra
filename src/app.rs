@@ -440,7 +440,7 @@ impl SnapApp {
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "…", Default::default(), Color32::GRAY);
                     }
                     let stroke = if selected {
-                        egui::Stroke::new(3.0, ORANGE)
+                        egui::Stroke::new(3.0, ui_kit::accent_fg(ui))
                     } else if resp.hovered() {
                         egui::Stroke::new(1.5, Color32::GRAY)
                     } else {
