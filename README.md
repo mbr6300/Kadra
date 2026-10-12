@@ -1,0 +1,54 @@
+# SnapIt
+
+Screenshot-Werkzeug im Stil von SnagIt (ohne Video), geschrieben in Rust (eframe/egui, xcap, tiny-skia).
+
+## Starten
+
+```bash
+./bundle.sh                 # baut target/SnapIt.app
+open target/SnapIt.app
+```
+
+Beim ersten Aufnehmen fragt macOS nach der Berechtigung **Bildschirmaufnahme**
+(Systemeinstellungen → Datenschutz & Sicherheit). Danach SnapIt neu starten.
+Für die Entwicklung geht auch `cargo run --release [bild.png]`.
+
+## Aufnahme
+
+| Modus | Kürzel (global) | Beschreibung |
+|---|---|---|
+| Bereich | ⌃⇧1 | Bereich aufziehen **oder** Fenster anklicken; Lupe mit Pixelkoordinate und Farbwert; Enter = ganzer Bildschirm |
+| Fenster | ⌃⇧2 | Fenster unter der Maus wird hervorgehoben, Klick nimmt es auf (auch verdeckte Teile) |
+| Bildschirm | ⌃⇧3 | Bildschirm unter dem Mauszeiger |
+| Alle Bildschirme | ⌃⇧4 | Alle Monitore zu einem Bild zusammengesetzt |
+
+Zusätzlich: Verzögerung (1–10 s), Bild aus Zwischenablage, Datei öffnen, Drag & Drop.
+
+## Nachbearbeitung
+
+Werkzeuge (Taste): Auswahl (V), Pfeil (A), Linie (L), Rechteck (R), Ellipse (E), Stift (P),
+Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Spotlight (S), Zuschneiden (C).
+
+- Alle Anmerkungen bleiben editierbar: verschieben, Größe über Griffe ändern, Farbe/Stärke/Füllung/Schatten anpassen
+- Shift beim Zeichnen: 45°-Winkel bzw. Quadrat/Kreis
+- Bild: Drehen, Spiegeln, Größe ändern, Zuschneiden
+- Effekte: Rahmen, runde Ecken, Schlagschatten
+- Undo/Redo (⌘Z / ⌘⇧Z), Duplizieren (⌘D), Löschen (Entf), Pfeiltasten verschieben, Zoom mit ⌘+Scroll/Pinch
+
+## Ausgabe & Bibliothek
+
+- Kopieren (⌘C), Schnellspeichern (⌘S) in `~/Pictures/SnapIt`, Speichern unter (⌘⇧S): PNG, JPEG, WebP, BMP, GIF, TIFF
+- Jede Aufnahme landet automatisch in der Bibliothek (Leiste unten) und bleibt dort editierbar:
+  `~/Library/Application Support/SnapIt/library/` (Original-PNG + Anmerkungen als JSON)
+
+## Aufbau
+
+| Datei | Inhalt |
+|---|---|
+| `src/capture.rs` | Bildschirm-/Fensteraufnahme (xcap) |
+| `src/overlay.rs` | Vollbild-Auswahl mit Lupe |
+| `src/editor.rs` | Editor, Werkzeuge, Undo |
+| `src/doc.rs` | Dokumentmodell (Anmerkungen) |
+| `src/render.rs` | Export-Rendering (tiny-skia, ab_glyph) |
+| `src/library.rs` | Bibliothek, Einstellungen, Export |
+| `src/platform.rs` | macOS-Spezifika (Fensterebene, Mausposition) |
