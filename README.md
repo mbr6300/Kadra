@@ -9,6 +9,18 @@ Screenshot-Werkzeug im Stil von SnagIt (ohne Video), geschrieben in Rust (eframe
 open target/SnapIt.app
 ```
 
+Installierbares DMG (App + Verknüpfung „Programme“ zum Hineinziehen):
+
+```bash
+./make_dmg.sh               # erzeugt target/SnapIt-<version>.dmg
+```
+
+Ist das Ziel `x86_64-apple-darwin` installiert (`rustup target add x86_64-apple-darwin`),
+entsteht automatisch eine Universal-App für Apple Silicon und Intel.
+Signiert wird mit der ersten Codesigning-Identität im Schlüsselbund (oder `SNAPIT_SIGN_IDENTITY`).
+Für die Weitergabe an andere Macs ohne Gatekeeper-Warnung braucht es eine
+„Developer ID Application“-Identität und Notarisierung (`xcrun notarytool`).
+
 Beim ersten Aufnehmen fragt macOS nach der Berechtigung **Bildschirmaufnahme**
 (Systemeinstellungen → Datenschutz & Sicherheit). Danach SnapIt neu starten.
 Für die Entwicklung geht auch `cargo run --release [bild.png]`.

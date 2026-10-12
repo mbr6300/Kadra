@@ -1,0 +1,81 @@
+//! Erzeugt das App-Icon (macOS-Iconset) – Aufruf: `cargo run --example make_icon -- <ordner.iconset>`
+//!
+//! Motiv: abgerundetes Quadrat in SnapIt-Orange mit weißem Sucher (Ecken) und Auslöser-Punkt.
+
+use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, Shader, Stroke, Transform};
+
+fn render(size: u32) -> Pixmap {
+    let s = size as f32;
+    let mut pm = Pixmap::new(size, size).unwrap();
+    // macOS-Raster: Icon-Fläche 824/1024, zentriert
+    let inset = s * 100.0 / 1024.0;
+    let side = s - 2.0 * inset;
+    let r = side * 0.225;
+
+    let body = rounded_rect(inset, inset, side, side, r);
+    let mut shadow = Paint::default();
+    shadow.set_color(Color::from_rgba8(0, 0, 0, 60));
+    shadow.anti_alias = true;
+    pm.fill_path(&body, &shadow, FillRule::Winding, Transform::from_translate(0.0, s * 0.012), None);
+
+    let mut paint = Paint::default();
+    paint.anti_alias = true;
+    paint.shader = LinearGradient::new(
+        Point::from_xy(0.0, inset),
+        Point::from_xy(0.0, inset + side),
+        vec![
+            GradientStop::new(0.0, Color::from_rgba8(224, 112, 60, 255)),
+            GradientStop::new(1.0, Color::from_rgba8(176, 72, 32, 255)),
+        ],
+        tiny_skia::SpreadMode::Pad,
+        Transform::identity(),
+    )
+    .unwrap_or(Shader::SolidColor(Color::from_rgba8(186, 82, 40, 255)));
+    pm.fill_path(&body, &paint, FillRule::Winding, Transform::identity(), None);
+
+    // Sucher-Ecken
+    let mut white = Paint::default();
+    white.set_color(Color::WHITE);
+    white.anti_alias = true;
+    let stroke = Stroke { width: side * 0.07, line_cap: tiny_skia::LineCap::Round, ..Default::default() };
+    let (a, b) = (inset + side * 0.24, inset + side * 0.76);
+    let arm = side * 0.16;
+    for (x, y, dx, dy) in [(a, a, 1.0, 1.0), (b, a, -1.0, 1.0), (a, b, 1.0, -1.0), (b, b, -1.0, -1.0)] {
+        let mut pb = PathBuilder::new();
+        pb.move_to(x, y + dy * arm);
+        pb.line_to(x, y);
+        pb.line_to(x + dx * arm, y);
+        pm.stroke_path(&pb.finish().unwrap(), &white, &stroke, Transform::identity(), None);
+    }
+    // Auslöser-Punkt
+    let c = s / 2.0;
+    let dot = PathBuilder::from_circle(c, c, side * 0.085).unwrap();
+    pm.fill_path(&dot, &white, FillRule::Winding, Transform::identity(), None);
+    pm
+}
+
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
+    let k = 0.5523 * r; // Bézier-Näherung für Viertelkreise
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    pb.close();
+    pb.finish().unwrap()
+}
+
+fn main() {
+    let dir = std::env::args().nth(1).unwrap_or_else(|| "target/SnapIt.iconset".into());
+    std::fs::create_dir_all(&dir).unwrap();
+    for base in [16, 32, 128, 256, 512] {
+        render(base).save_png(format!("{dir}/icon_{base}x{base}.png")).unwrap();
+        render(base * 2).save_png(format!("{dir}/icon_{base}x{base}@2x.png")).unwrap();
+    }
+    println!("Iconset: {dir}");
+}
