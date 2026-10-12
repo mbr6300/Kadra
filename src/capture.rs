@@ -16,6 +16,9 @@ pub enum CaptureKind {
 }
 
 impl CaptureKind {
+    pub const ALL: [CaptureKind; 4] =
+        [CaptureKind::Region, CaptureKind::Window, CaptureKind::Screen, CaptureKind::AllScreens];
+
     pub fn label(self) -> &'static str {
         match self {
             CaptureKind::Region => "Bereich",
@@ -31,10 +34,19 @@ impl CaptureKind {
 
 #[derive(Clone, Debug)]
 pub struct WinInfo {
+    pub id: u32,
     pub title: String,
     pub app: String,
     /// Logische Koordinaten relativ zum Monitor.
     pub rect: Rect,
+    /// false = auf anderem Schreibtisch oder minimiert.
+    pub on_screen: bool,
+}
+
+impl WinInfo {
+    pub fn label(&self) -> String {
+        if self.title.is_empty() { self.app.clone() } else { format!("{} – {}", self.app, self.title) }
+    }
 }
 
 pub struct Grab {
@@ -43,6 +55,7 @@ pub struct Grab {
     /// Logische Monitor-Position/-Größe (globale Koordinaten).
     pub origin: Pos2,
     pub size: Vec2,
+    /// Alle Fenster (vorne zuerst), auch verdeckte und auf anderen Schreibtischen.
     pub windows: Vec<WinInfo>,
 }
 
@@ -81,21 +94,29 @@ fn current_monitor() -> Result<Monitor, String> {
 const IGNORED_APPS: &[&str] =
     &["Window Server", "Dock", "Control Center", "SystemUIServer", "Notification Center", "Spotlight"];
 
-fn list_windows(origin: Pos2, size: Vec2) -> Vec<WinInfo> {
+/// Alle aufnehmbaren Fenster, vorderstes zuerst – inkl. verdeckter und solcher
+/// auf anderen Schreibtischen.
+fn list_windows(origin: Pos2) -> Vec<WinInfo> {
     let own = std::process::id();
-    let screen = Rect::from_min_size(origin, size);
-    // Liste ist von vorne nach hinten sortiert.
-    crate::platform::list_windows()
+    crate::platform::list_windows(true)
         .into_iter()
         .filter_map(|w| {
             if w.pid == own || IGNORED_APPS.contains(&w.app.as_str()) {
                 return None;
             }
-            let r = Rect::from_min_size(Pos2::new(w.x, w.y), Vec2::new(w.w, w.h));
-            if r.width() < 40.0 || r.height() < 40.0 || !r.intersects(screen) {
+            // Unsichtbare Hilfsfenster ohne Titel ausblenden.
+            let hidden_junk = !w.on_screen && (w.title.trim().is_empty() || w.w < 160.0 || w.h < 100.0);
+            if w.w < 60.0 || w.h < 40.0 || hidden_junk {
                 return None;
             }
-            Some(WinInfo { title: w.title, app: w.app, rect: r.translate(-origin.to_vec2()) })
+            let r = Rect::from_min_size(Pos2::new(w.x, w.y), Vec2::new(w.w, w.h));
+            Some(WinInfo {
+                id: w.id,
+                title: w.title,
+                app: w.app,
+                rect: r.translate(-origin.to_vec2()),
+                on_screen: w.on_screen,
+            })
         })
         .collect()
 }
@@ -108,7 +129,7 @@ pub fn grab(kind: CaptureKind) -> Result<Grab, String> {
     let origin = Pos2::new(m.x().unwrap_or(0) as f32, m.y().unwrap_or(0) as f32);
     let size = Vec2::new(m.width().unwrap_or(1) as f32, m.height().unwrap_or(1) as f32);
     let image = m.capture_image().map_err(|e| format!("Aufnahme fehlgeschlagen: {e}"))?;
-    let windows = if kind.needs_overlay() { list_windows(origin, size) } else { vec![] };
+    let windows = if kind.needs_overlay() { list_windows(origin) } else { vec![] };
     Ok(Grab { kind, image, origin, size, windows })
 }
 
