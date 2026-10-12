@@ -4,13 +4,12 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Vec2, ViewportCommand};
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use image::RgbaImage;
 
 use crate::capture::{self, CaptureKind, Grab};
 use crate::doc::Document;
 use crate::editor::Editor;
+use crate::hotkeys::{self, Hotkeys, Shortcut};
 use crate::library::{self, Item, Settings};
 use crate::overlay::{Overlay, OverlayResult};
 use crate::platform;
@@ -21,11 +20,6 @@ enum Phase {
     /// Fenster ist versteckt, Aufnahme läuft im Hintergrund.
     Capturing(Receiver<Result<Grab, String>>),
     Overlay(Box<Overlay>),
-}
-
-struct Hotkeys {
-    _manager: GlobalHotKeyManager,
-    map: Vec<(u32, CaptureKind)>,
 }
 
 pub struct SnapApp {
@@ -43,14 +37,23 @@ pub struct SnapApp {
     show_permission: bool,
     confirm_delete: Option<String>,
     overlay_fix_frames: u8,
+    /// Modi, deren Kürzel nicht registriert werden konnte.
+    hotkey_failed: Vec<CaptureKind>,
+    /// Index des Modus, für den gerade ein neues Kürzel aufgenommen wird.
+    recording: Option<usize>,
+    recording_hint: Option<String>,
 }
 
-pub const HOTKEYS: [(Code, CaptureKind, &str); 4] = [
-    (Code::Digit1, CaptureKind::Region, "⌃⇧1"),
-    (Code::Digit2, CaptureKind::Window, "⌃⇧2"),
-    (Code::Digit3, CaptureKind::Screen, "⌃⇧3"),
-    (Code::Digit4, CaptureKind::AllScreens, "⌃⇧4"),
-];
+/// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ als Ersatz anhängen (fehlen in den egui-Schriften).
+fn install_symbol_font(ctx: &egui::Context) {
+    let Ok(bytes) = std::fs::read("/System/Library/Fonts/Apple Symbols.ttf") else { return };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("symbols".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("symbols".into());
+    }
+    ctx.set_fonts(fonts);
+}
 
 impl SnapApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -58,7 +61,12 @@ impl SnapApp {
         let (thumb_tx, thumb_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
 
-        let hotkeys = settings.hotkeys.then(|| register_hotkeys(&cc.egui_ctx, hk_tx)).flatten();
+        install_symbol_font(&cc.egui_ctx);
+        let mut hotkeys = Hotkeys::new(&cc.egui_ctx, hk_tx);
+        let hotkey_failed = hotkeys
+            .as_mut()
+            .map(|h| h.apply(&settings.shortcuts, settings.hotkeys))
+            .unwrap_or_default();
 
         let mut style = (*cc.egui_ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(8.0, 6.0);
@@ -80,6 +88,9 @@ impl SnapApp {
             show_permission: false,
             confirm_delete: None,
             overlay_fix_frames: 0,
+            hotkey_failed,
+            recording: None,
+            recording_hint: None,
         };
         // `snapit bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
@@ -289,14 +300,15 @@ impl SnapApp {
     fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            for (i, kind) in [CaptureKind::Region, CaptureKind::Window, CaptureKind::Screen, CaptureKind::AllScreens]
-                .into_iter()
-                .enumerate()
-            {
+            for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
                 let icon = ["⛶", "🗔", "🖵", "🖥"][i];
                 let text = RichText::new(format!("{icon}  {}", kind.label())).size(14.0);
                 let btn = egui::Button::new(text).fill(if i == 0 { Color32::from_rgb(220, 90, 20) } else { ui.visuals().widgets.inactive.bg_fill });
-                if ui.add(btn).on_hover_text(format!("Aufnehmen ({})", HOTKEYS[i].2)).clicked() {
+                let tip = match self.shortcut_text(i) {
+                    Some(s) => format!("{} aufnehmen ({s})", kind.label()),
+                    None => format!("{} aufnehmen", kind.label()),
+                };
+                if ui.add(btn).on_hover_text(tip).clicked() {
                     self.start_capture(ctx, kind);
                 }
             }
@@ -421,12 +433,13 @@ impl SnapApp {
             ui.heading(RichText::new("SnapIt").size(40.0).strong());
             ui.label("Bildschirmfotos aufnehmen, beschriften und teilen.");
             ui.add_space(24.0);
-            for (i, (_, kind, hk)) in HOTKEYS.iter().enumerate() {
+            for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
+                let hk = self.shortcut_text(i).unwrap_or_default();
                 let txt = RichText::new(format!("{}   {hk}", kind.label())).size(18.0);
                 let btn = egui::Button::new(txt).min_size(Vec2::new(260.0, 44.0));
                 let btn = if i == 0 { btn.fill(Color32::from_rgb(220, 90, 20)) } else { btn };
                 if ui.add(btn).clicked() {
-                    self.start_capture(ctx, *kind);
+                    self.start_capture(ctx, kind);
                 }
             }
             ui.add_space(16.0);
@@ -438,6 +451,7 @@ impl SnapApp {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         let mut changed = false;
+        let mut hotkeys_changed = false;
         egui::Window::new("Einstellungen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Zielordner:");
@@ -456,24 +470,133 @@ impl SnapApp {
                 }
             });
             changed |= ui.checkbox(&mut self.settings.copy_after_capture, "Nach Aufnahme automatisch in Zwischenablage kopieren").changed();
-            changed |= ui.checkbox(&mut self.settings.hotkeys, "Globale Tastenkürzel (Neustart nötig)").changed();
             ui.separator();
-            ui.label(RichText::new("Tastenkürzel").strong());
-            for (_, k, hk) in HOTKEYS {
-                ui.label(format!("{hk}  –  {}", k.label()));
+            ui.label(RichText::new("Globale Tastenkürzel").strong());
+            if ui.checkbox(&mut self.settings.hotkeys, "Aktiv (funktionieren auch, wenn SnapIt im Hintergrund ist)").changed() {
+                changed = true;
+                hotkeys_changed = true;
             }
-            if self.settings.hotkeys && self.hotkeys.is_none() {
-                ui.colored_label(Color32::from_rgb(220, 120, 0), "Globale Kürzel konnten nicht registriert werden.");
+            ui.add_enabled_ui(self.settings.hotkeys, |ui| {
+                egui::Grid::new("shortcuts").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
+                    for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
+                        ui.label(kind.label());
+                        ui.horizontal(|ui| {
+                            if self.recording == Some(i) {
+                                ui.colored_label(Color32::from_rgb(255, 150, 60), "Tastenkombination drücken …");
+                            } else if let Some(sc) = &self.settings.shortcuts[i] {
+                                hotkeys::caps_ui(ui, sc);
+                                if self.hotkey_failed.contains(&kind) {
+                                    ui.colored_label(Color32::from_rgb(220, 120, 0), "⚠")
+                                        .on_hover_text("Konnte nicht registriert werden – evtl. von einer anderen App belegt.");
+                                }
+                            } else {
+                                ui.weak("– keins –");
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if self.recording == Some(i) {
+                                if ui.button("Abbrechen").clicked() {
+                                    self.recording = None;
+                                    hotkeys_changed = true;
+                                }
+                            } else {
+                                if ui.button("Ändern").clicked() {
+                                    self.recording = Some(i);
+                                    self.recording_hint = None;
+                                    // Während der Aufnahme dürfen bestehende Kürzel nicht auslösen.
+                                    if let Some(h) = &mut self.hotkeys {
+                                        h.suspend();
+                                    }
+                                }
+                                if self.settings.shortcuts[i].is_some() && ui.button("Entfernen").clicked() {
+                                    self.settings.shortcuts[i] = None;
+                                    changed = true;
+                                    hotkeys_changed = true;
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+                if let Some(hint) = &self.recording_hint {
+                    ui.colored_label(Color32::from_rgb(220, 120, 0), hint);
+                } else if self.recording.is_some() {
+                    ui.weak("Mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren (z. B. ⌃ + ⇧ + 1). Esc bricht ab.");
+                }
+                if ui.button("Standard wiederherstellen").clicked() {
+                    self.settings.shortcuts = Shortcut::defaults();
+                    self.recording = None;
+                    changed = true;
+                    hotkeys_changed = true;
+                }
+            });
+            if self.hotkeys.is_none() {
+                ui.colored_label(Color32::from_rgb(220, 120, 0), "Globale Kürzel werden auf diesem System nicht unterstützt.");
             }
-            ui.label("Editor: V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · C Zuschneiden");
-            ui.label("⌘Z / ⌘⇧Z Rückgängig/Wiederholen · ⌘D Duplizieren · Entf Löschen · Pfeiltasten Verschieben · ⌘+Scroll Zoom");
+            ui.separator();
+            ui.label(RichText::new("Editor").strong());
+            ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · C Zuschneiden");
+            ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
             ui.separator();
             ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
         });
+        if !open && self.recording.take().is_some() {
+            hotkeys_changed = true;
+        }
         if changed {
             self.settings.save();
         }
+        if hotkeys_changed {
+            self.apply_hotkeys();
+        }
         self.show_settings = open;
+    }
+
+    fn apply_hotkeys(&mut self) {
+        if let Some(h) = &mut self.hotkeys {
+            self.hotkey_failed = h.apply(&self.settings.shortcuts, self.settings.hotkeys);
+        }
+    }
+
+    fn shortcut_text(&self, i: usize) -> Option<String> {
+        self.settings.hotkeys.then(|| self.settings.shortcuts[i].as_ref().map(Shortcut::compact)).flatten()
+    }
+
+    /// Nimmt während der Kürzel-Aufnahme die nächste Tastenkombination entgegen.
+    fn record_shortcut(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.recording else { return };
+        let pressed = ctx.input(|inp| {
+            inp.events.iter().find_map(|e| match e {
+                // Physische Taste: ⇧+1 soll „1“ ergeben, nicht „!“.
+                egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } => {
+                    Some((physical_key.unwrap_or(*key), *modifiers))
+                }
+                _ => None,
+            })
+        });
+        let Some((key, mods)) = pressed else { return };
+        if key == egui::Key::Escape && !mods.any() {
+            self.recording = None;
+            self.apply_hotkeys();
+            return;
+        }
+        let sc = Shortcut::new(mods, key);
+        if !sc.is_valid() {
+            self.recording_hint =
+                Some(format!("„{}“ geht nicht – bitte mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren.", sc.compact()));
+            return;
+        }
+        // Doppelte Belegung auflösen
+        for (j, other) in self.settings.shortcuts.iter_mut().enumerate() {
+            if j != i && other.as_ref() == Some(&sc) {
+                *other = None;
+            }
+        }
+        self.settings.shortcuts[i] = Some(sc);
+        self.recording = None;
+        self.recording_hint = None;
+        self.settings.save();
+        self.apply_hotkeys();
     }
 
     fn permission_dialog(&mut self, ctx: &egui::Context) {
@@ -575,7 +698,7 @@ impl eframe::App for SnapApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Globale Hotkeys
         while let Ok(id) = self.hotkey_rx.try_recv() {
-            if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.map.iter().find(|(i, _)| *i == id)).map(|(_, k)| *k) {
+            if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.kind_for(id)) {
                 self.start_capture(ctx, kind);
             }
         }
@@ -620,9 +743,14 @@ impl eframe::App for SnapApp {
             self.open_path(p);
         }
 
-        self.global_shortcuts(ctx);
-        if let Some(ed) = &mut self.editor {
-            ed.shortcuts(ctx);
+        if self.recording.is_some() {
+            // Tastendrücke gehören der Kürzel-Aufnahme, nicht dem Editor.
+            self.record_shortcut(ctx);
+        } else {
+            self.global_shortcuts(ctx);
+            if let Some(ed) = &mut self.editor {
+                ed.shortcuts(ctx);
+            }
         }
         self.flush_save(false);
         if self.editor.as_ref().is_some_and(|e| e.dirty) {
@@ -690,23 +818,4 @@ fn copy_to_clipboard(img: &RgbaImage) -> Result<(), String> {
         bytes: std::borrow::Cow::Borrowed(img.as_raw()),
     })
     .map_err(|e| e.to_string())
-}
-
-fn register_hotkeys(ctx: &egui::Context, tx: Sender<u32>) -> Option<Hotkeys> {
-    let manager = GlobalHotKeyManager::new().ok()?;
-    let mut map = vec![];
-    for (code, kind, _) in HOTKEYS {
-        let hk = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code);
-        if manager.register(hk).is_ok() {
-            map.push((hk.id(), kind));
-        }
-    }
-    let ctx = ctx.clone();
-    GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
-        if e.state == HotKeyState::Pressed {
-            let _ = tx.send(e.id);
-            ctx.request_repaint();
-        }
-    }));
-    Some(Hotkeys { _manager: manager, map })
 }

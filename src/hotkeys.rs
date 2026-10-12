@@ -1,0 +1,237 @@
+//! Frei belegbare globale Tastenkürzel für die Aufnahmemodi.
+
+use std::sync::mpsc::Sender;
+
+use egui::Key;
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use serde::{Deserialize, Serialize};
+
+use crate::capture::CaptureKind;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shortcut {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub cmd: bool,
+    /// egui-Tastenname, z. B. "1", "A", "F5".
+    pub key: String,
+}
+
+impl Shortcut {
+    pub fn new(m: egui::Modifiers, key: Key) -> Self {
+        Self { ctrl: m.ctrl, alt: m.alt, shift: m.shift, cmd: m.mac_cmd, key: key.name().to_string() }
+    }
+
+    fn key(&self) -> Option<Key> {
+        Key::from_name(&self.key)
+    }
+
+    /// Standard: ⌃⇧1 … ⌃⇧4
+    pub fn defaults() -> [Option<Shortcut>; 4] {
+        [Key::Num1, Key::Num2, Key::Num3, Key::Num4].map(|k| {
+            Some(Shortcut { ctrl: true, alt: false, shift: true, cmd: false, key: k.name().to_string() })
+        })
+    }
+
+    /// Globale Kürzel brauchen ⌃, ⌥ oder ⌘ (Funktionstasten gehen auch allein).
+    pub fn is_valid(&self) -> bool {
+        let fkey = self.key.starts_with('F') && self.key.len() > 1;
+        (self.ctrl || self.alt || self.cmd || fkey) && self.key().and_then(key_code).is_some()
+    }
+
+    fn hotkey(&self) -> Option<HotKey> {
+        let mut m = Modifiers::empty();
+        m.set(Modifiers::CONTROL, self.ctrl);
+        m.set(Modifiers::ALT, self.alt);
+        m.set(Modifiers::SHIFT, self.shift);
+        m.set(Modifiers::SUPER, self.cmd);
+        Some(HotKey::new(Some(m), key_code(self.key()?)?))
+    }
+
+    /// Einzelne Tasten zur Anzeige als „Tastenkappen“.
+    pub fn caps(&self) -> Vec<String> {
+        let mac = cfg!(target_os = "macos");
+        let mut v = vec![];
+        if self.ctrl {
+            v.push(if mac { "⌃ Ctrl" } else { "Ctrl" }.to_string());
+        }
+        if self.alt {
+            v.push(if mac { "⌥ Option" } else { "Alt" }.to_string());
+        }
+        if self.shift {
+            v.push(if mac { "⇧ Shift" } else { "Shift" }.to_string());
+        }
+        if self.cmd {
+            v.push(if mac { "⌘ Cmd" } else { "Win" }.to_string());
+        }
+        v.push(self.key().map(|k| k.symbol_or_name().to_string()).unwrap_or_else(|| self.key.clone()));
+        v
+    }
+
+    /// Kurzform, z. B. „⌃⇧1“.
+    pub fn compact(&self) -> String {
+        let mac = cfg!(target_os = "macos");
+        let mut s = String::new();
+        for (on, sym, word) in [(self.ctrl, "⌃", "Ctrl+"), (self.alt, "⌥", "Alt+"), (self.shift, "⇧", "Shift+"), (self.cmd, "⌘", "Win+")] {
+            if on {
+                s += if mac { sym } else { word };
+            }
+        }
+        s + &self.key().map(|k| k.symbol_or_name().to_string()).unwrap_or_else(|| self.key.clone())
+    }
+}
+
+/// Zeichnet ein Kürzel als Tastenkappen.
+pub fn caps_ui(ui: &mut egui::Ui, sc: &Shortcut) {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    for (i, cap) in sc.caps().iter().enumerate() {
+        if i > 0 {
+            ui.weak("+");
+        }
+        egui::Frame::new()
+            .fill(ui.visuals().widgets.inactive.bg_fill)
+            .stroke(ui.visuals().widgets.inactive.bg_stroke)
+            .corner_radius(4)
+            .inner_margin(egui::Margin::symmetric(6, 2))
+            .show(ui, |ui| ui.label(egui::RichText::new(cap).monospace()));
+    }
+}
+
+pub struct Hotkeys {
+    manager: GlobalHotKeyManager,
+    registered: Vec<(HotKey, CaptureKind)>,
+}
+
+impl Hotkeys {
+    pub fn new(ctx: &egui::Context, tx: Sender<u32>) -> Option<Self> {
+        let manager = GlobalHotKeyManager::new().ok()?;
+        let ctx = ctx.clone();
+        // Der Handler lässt sich nur einmal setzen; Kürzel werden danach beliebig neu registriert.
+        GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
+            if e.state == HotKeyState::Pressed {
+                let _ = tx.send(e.id);
+                ctx.request_repaint();
+            }
+        }));
+        Some(Self { manager, registered: vec![] })
+    }
+
+    /// Registriert die Kürzel neu. Gibt die Modi zurück, deren Kürzel belegt/ungültig ist.
+    pub fn apply(&mut self, shortcuts: &[Option<Shortcut>; 4], enabled: bool) -> Vec<CaptureKind> {
+        self.suspend();
+        let mut failed = vec![];
+        if !enabled {
+            return failed;
+        }
+        for (sc, kind) in shortcuts.iter().zip(CaptureKind::ALL) {
+            let Some(sc) = sc else { continue };
+            match sc.hotkey() {
+                Some(hk) if self.manager.register(hk).is_ok() => self.registered.push((hk, kind)),
+                _ => failed.push(kind),
+            }
+        }
+        failed
+    }
+
+    /// Alle Kürzel abmelden (z. B. während ein neues aufgenommen wird).
+    pub fn suspend(&mut self) {
+        for (hk, _) in self.registered.drain(..) {
+            let _ = self.manager.unregister(hk);
+        }
+    }
+
+    pub fn kind_for(&self, id: u32) -> Option<CaptureKind> {
+        self.registered.iter().find(|(hk, _)| hk.id() == id).map(|(_, k)| *k)
+    }
+}
+
+fn key_code(k: Key) -> Option<Code> {
+    use Code as C;
+    use Key as K;
+    Some(match k {
+        K::A => C::KeyA,
+        K::B => C::KeyB,
+        K::C => C::KeyC,
+        K::D => C::KeyD,
+        K::E => C::KeyE,
+        K::F => C::KeyF,
+        K::G => C::KeyG,
+        K::H => C::KeyH,
+        K::I => C::KeyI,
+        K::J => C::KeyJ,
+        K::K => C::KeyK,
+        K::L => C::KeyL,
+        K::M => C::KeyM,
+        K::N => C::KeyN,
+        K::O => C::KeyO,
+        K::P => C::KeyP,
+        K::Q => C::KeyQ,
+        K::R => C::KeyR,
+        K::S => C::KeyS,
+        K::T => C::KeyT,
+        K::U => C::KeyU,
+        K::V => C::KeyV,
+        K::W => C::KeyW,
+        K::X => C::KeyX,
+        K::Y => C::KeyY,
+        K::Z => C::KeyZ,
+        K::Num0 => C::Digit0,
+        K::Num1 => C::Digit1,
+        K::Num2 => C::Digit2,
+        K::Num3 => C::Digit3,
+        K::Num4 => C::Digit4,
+        K::Num5 => C::Digit5,
+        K::Num6 => C::Digit6,
+        K::Num7 => C::Digit7,
+        K::Num8 => C::Digit8,
+        K::Num9 => C::Digit9,
+        K::F1 => C::F1,
+        K::F2 => C::F2,
+        K::F3 => C::F3,
+        K::F4 => C::F4,
+        K::F5 => C::F5,
+        K::F6 => C::F6,
+        K::F7 => C::F7,
+        K::F8 => C::F8,
+        K::F9 => C::F9,
+        K::F10 => C::F10,
+        K::F11 => C::F11,
+        K::F12 => C::F12,
+        K::F13 => C::F13,
+        K::F14 => C::F14,
+        K::F15 => C::F15,
+        K::F16 => C::F16,
+        K::F17 => C::F17,
+        K::F18 => C::F18,
+        K::F19 => C::F19,
+        K::F20 => C::F20,
+        K::Space => C::Space,
+        K::Enter => C::Enter,
+        K::Tab => C::Tab,
+        K::Backspace => C::Backspace,
+        K::Delete => C::Delete,
+        K::Insert => C::Insert,
+        K::Home => C::Home,
+        K::End => C::End,
+        K::PageUp => C::PageUp,
+        K::PageDown => C::PageDown,
+        K::ArrowUp => C::ArrowUp,
+        K::ArrowDown => C::ArrowDown,
+        K::ArrowLeft => C::ArrowLeft,
+        K::ArrowRight => C::ArrowRight,
+        K::Minus => C::Minus,
+        K::Equals => C::Equal,
+        K::Comma => C::Comma,
+        K::Period => C::Period,
+        K::Slash => C::Slash,
+        K::Backslash => C::Backslash,
+        K::Semicolon => C::Semicolon,
+        K::Quote => C::Quote,
+        K::OpenBracket => C::BracketLeft,
+        K::CloseBracket => C::BracketRight,
+        K::Backtick => C::Backquote,
+        _ => return None,
+    })
+}

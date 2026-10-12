@@ -4,6 +4,7 @@ mod app;
 mod capture;
 mod doc;
 mod editor;
+mod hotkeys;
 mod library;
 mod overlay;
 mod platform;

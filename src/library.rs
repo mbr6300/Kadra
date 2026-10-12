@@ -7,6 +7,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
 use crate::doc::{DocMeta, Document};
+use crate::hotkeys::Shortcut;
 use crate::render;
 
 pub fn data_dir() -> PathBuf {
@@ -91,6 +92,8 @@ pub struct Settings {
     pub delay_secs: u32,
     pub copy_after_capture: bool,
     pub hotkeys: bool,
+    /// Kürzel je Aufnahmemodus (Reihenfolge wie `CaptureKind::ALL`).
+    pub shortcuts: [Option<Shortcut>; 4],
 }
 
 impl Default for Settings {
@@ -101,6 +104,7 @@ impl Default for Settings {
             delay_secs: 0,
             copy_after_capture: false,
             hotkeys: true,
+            shortcuts: Shortcut::defaults(),
         }
     }
 }
