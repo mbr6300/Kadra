@@ -15,6 +15,7 @@ use crate::library::{self, Item, Settings};
 use crate::overlay::{Overlay, OverlayResult};
 use crate::platform;
 use crate::render;
+use crate::tray::{Tray, TrayAction};
 
 enum Phase {
     Normal,
@@ -46,6 +47,15 @@ pub struct SnapApp {
     pending_export: Option<PendingExport>,
     estimate_tx: Sender<(u8, usize)>,
     estimate_rx: Receiver<(u8, usize)>,
+    /// Symbol in der Menüleiste (muss am Leben bleiben).
+    tray: Option<Tray>,
+    tray_rx: Receiver<TrayAction>,
+    /// Fenster geschlossen, App läuft nur in der Menüleiste.
+    hidden: bool,
+    hidden_before_capture: bool,
+    /// „SnapIt beenden“ gewählt – Schließen nicht mehr abfangen.
+    quitting: bool,
+    show_background_hint: bool,
 }
 
 /// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ als Ersatz anhängen (fehlen in den egui-Schriften).
@@ -65,6 +75,7 @@ impl SnapApp {
         let (thumb_tx, thumb_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
         let (estimate_tx, estimate_rx) = channel();
+        let (tray_tx, tray_rx) = channel();
 
         install_symbol_font(&cc.egui_ctx);
         let mut hotkeys = Hotkeys::new(&cc.egui_ctx, hk_tx);
@@ -96,7 +107,14 @@ impl SnapApp {
             pending_export: None,
             estimate_tx,
             estimate_rx,
+            tray: None,
+            tray_rx,
+            hidden: false,
+            hidden_before_capture: false,
+            quitting: false,
+            show_background_hint: false,
         };
+        app.tray = Tray::new(&cc.egui_ctx, tray_tx, &app.shortcut_texts());
         // `snapit bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
             app.open_path(std::path::Path::new(&path));
@@ -118,11 +136,11 @@ impl SnapApp {
             // Ohne Berechtigung liefert macOS nur das Hintergrundbild ohne Fenster.
             platform::request_screen_capture();
             self.show_permission = true;
-            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            self.show_window(ctx);
             return;
         }
         self.flush_save(true);
+        self.hidden_before_capture = self.hidden;
         self.saved_window = ctx.input(|i| {
             let vp = i.viewport();
             Some((vp.outer_rect?.min, vp.inner_rect?.size()))
@@ -140,7 +158,9 @@ impl SnapApp {
         ctx.request_repaint_after(Duration::from_millis(100));
     }
 
-    fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+    /// Fenster nach der Aufnahme zurücksetzen. `show = false` lässt SnapIt im Hintergrund
+    /// (wenn die Aufnahme aus der Menüleiste kam und abgebrochen wurde).
+    fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame, show: bool) {
         platform::set_overlay_level(frame, false);
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         if let Some((pos, size)) = self.saved_window.take() {
@@ -148,8 +168,82 @@ impl SnapApp {
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         }
+        if show {
+            self.show_window(ctx);
+        } else {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        }
+    }
+
+    /// Hauptfenster zeigen und SnapIt wieder ins Dock holen.
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.hidden = false;
+        platform::set_dock_visible(true);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
+    }
+
+    /// Fenster schließen = nur ausblenden; SnapIt läuft in der Menüleiste weiter.
+    fn hide_to_background(&mut self, ctx: &egui::Context) {
+        if !self.settings.background_hint_shown && self.tray.is_some() {
+            // Beim ersten Mal erklären, wo SnapIt bleibt (Dialog blendet danach aus).
+            self.show_background_hint = true;
+            return;
+        }
+        self.flush_save(true);
+        self.hidden = true;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        platform::set_dock_visible(false);
+    }
+
+    fn background_hint_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_background_hint {
+            return;
+        }
+        egui::Window::new("SnapIt läuft weiter")
+            .collapsible(false)
+            .resizable(false)
+            .min_width(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Das Fenster wird geschlossen, SnapIt bleibt aber in der Menüleiste oben rechts aktiv.");
+                ui.label("Über das Symbol ⛶ erreichst du die Aufnahmen, öffnest SnapIt wieder oder beendest es ganz.");
+                ui.weak("Globale Tastenkürzel funktionieren weiterhin.");
+                let (ok, cancel) = ui_kit::dialog_buttons(ui, "Verstanden", true);
+                if ok {
+                    self.show_background_hint = false;
+                    self.settings.background_hint_shown = true;
+                    self.settings.save();
+                    self.hide_to_background(ctx);
+                } else if cancel {
+                    self.show_background_hint = false;
+                }
+            });
+    }
+
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        while let Ok(action) = self.tray_rx.try_recv() {
+            match action {
+                TrayAction::Capture(kind) => self.start_capture(ctx, kind),
+                TrayAction::Show => self.show_window(ctx),
+                TrayAction::CopyLast => {
+                    if self.editor.is_none() {
+                        if let Some(id) = self.items.first().map(|i| i.id.clone()) {
+                            self.open_item(&id);
+                        }
+                    }
+                    self.copy();
+                }
+                TrayAction::Settings => {
+                    self.show_settings = true;
+                    self.show_window(ctx);
+                }
+                TrayAction::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
+        }
     }
 
     fn poll_capture(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -161,12 +255,14 @@ impl SnapApp {
         match res {
             Err(e) => {
                 self.phase = Phase::Normal;
-                self.restore_window(ctx, frame);
+                self.restore_window(ctx, frame, true);
                 self.notify(format!("Fehler: {e} – Bildschirmaufnahme-Berechtigung prüfen."));
             }
             Ok(grab) if grab.kind.needs_overlay() => {
                 let (origin, size) = (grab.origin, grab.size);
                 self.phase = Phase::Overlay(Box::new(Overlay::new(ctx, grab)));
+                // Aus dem Hintergrund: App aktivieren, damit das Overlay Tastatur/Maus bekommt.
+                platform::activate_app();
                 platform::set_overlay_level(frame, true);
                 ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
@@ -177,7 +273,7 @@ impl SnapApp {
             }
             Ok(grab) => {
                 self.phase = Phase::Normal;
-                self.restore_window(ctx, frame);
+                self.restore_window(ctx, frame, true);
                 self.open_new(grab.image);
             }
         }
@@ -700,6 +796,13 @@ impl SnapApp {
         if let Some(h) = &mut self.hotkeys {
             self.hotkey_failed = h.apply(&self.settings.shortcuts, self.settings.hotkeys);
         }
+        if let Some(t) = &self.tray {
+            t.set_shortcuts(&self.shortcut_texts());
+        }
+    }
+
+    fn shortcut_texts(&self) -> [Option<String>; 4] {
+        std::array::from_fn(|i| self.shortcut_text(i))
     }
 
     fn shortcut_text(&self, i: usize) -> Option<String> {
@@ -848,6 +951,12 @@ impl SnapApp {
 
 impl eframe::App for SnapApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Schließen-Knopf / ⌘W: nur ausblenden, außer „SnapIt beenden“ wurde gewählt.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.hide_to_background(ctx);
+        }
+        self.handle_tray(ctx);
         // Globale Hotkeys
         while let Ok(id) = self.hotkey_rx.try_recv() {
             if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.kind_for(id)) {
@@ -874,11 +983,12 @@ impl eframe::App for SnapApp {
                 OverlayResult::Pending => {}
                 OverlayResult::Cancel => {
                     self.phase = Phase::Normal;
-                    self.restore_window(ctx, frame);
+                    let show = !self.hidden_before_capture;
+                    self.restore_window(ctx, frame, show);
                 }
                 OverlayResult::Done(img) => {
                     self.phase = Phase::Normal;
-                    self.restore_window(ctx, frame);
+                    self.restore_window(ctx, frame, true);
                     self.open_new(img);
                 }
             }
@@ -898,7 +1008,7 @@ impl eframe::App for SnapApp {
         if self.recording.is_some() {
             // Tastendrücke gehören der Kürzel-Aufnahme, nicht dem Editor.
             self.record_shortcut(ctx);
-        } else if self.pending_export.is_some() || self.confirm_delete.is_some() {
+        } else if self.pending_export.is_some() || self.confirm_delete.is_some() || self.show_background_hint {
             // Dialog offen: Tasten gehören dem Dialog.
         } else {
             self.global_shortcuts(ctx);
@@ -954,6 +1064,7 @@ impl eframe::App for SnapApp {
 
         self.settings_window(ctx);
         self.export_dialog(ctx);
+        self.background_hint_dialog(ctx);
         self.permission_dialog(ctx);
         self.delete_dialog(ctx);
     }

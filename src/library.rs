@@ -97,6 +97,8 @@ pub struct Settings {
     pub shortcuts: [Option<Shortcut>; 4],
     /// 1–100, gilt für JPEG und PDF.
     pub jpeg_quality: u8,
+    /// Hinweis „läuft in der Menüleiste weiter“ wurde schon gezeigt.
+    pub background_hint_shown: bool,
 }
 
 impl Default for Settings {
@@ -109,6 +111,7 @@ impl Default for Settings {
             hotkeys: true,
             shortcuts: Shortcut::defaults(),
             jpeg_quality: 90,
+            background_hint_shown: false,
         }
     }
 }

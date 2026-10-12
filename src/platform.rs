@@ -298,6 +298,44 @@ mod tests {
     }
 }
 
+/// Dock-Symbol zeigen (normale App) oder ausblenden (läuft nur in der Menüleiste).
+/// Beim Zeigen wird die App zusätzlich in den Vordergrund geholt.
+#[cfg(target_os = "macos")]
+pub fn set_dock_visible(visible: bool) {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    // NSApplicationActivationPolicyRegular = 0, Accessory = 1
+    let policy: isize = if visible { 0 } else { 1 };
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return;
+        }
+        let _: bool = msg_send![app, setActivationPolicy: policy];
+        if visible {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
+/// App in den Vordergrund holen (z. B. für das Auswahl-Overlay aus dem Hintergrund).
+#[cfg(target_os = "macos")]
+pub fn activate_app() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if !app.is_null() {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_visible(_visible: bool) {}
+#[cfg(not(target_os = "macos"))]
+pub fn activate_app() {}
+
 /// Hebt das Fenster über Menüleiste und Dock (für das Auswahl-Overlay).
 #[cfg(target_os = "macos")]
 pub fn set_overlay_level(frame: &eframe::Frame, overlay: bool) {

@@ -9,6 +9,7 @@ mod library;
 mod overlay;
 mod platform;
 mod render;
+mod tray;
 mod ui_kit;
 
 fn main() -> eframe::Result {
