@@ -8,7 +8,8 @@ use image::RgbaImage;
 
 use crate::capture::{self, CaptureKind, Grab};
 use crate::doc::Document;
-use crate::editor::Editor;
+use crate::editor::{self, Editor};
+use crate::ui_kit::{self, bar_button, bar_separator, Look, ORANGE};
 use crate::hotkeys::{self, Hotkeys, Shortcut};
 use crate::library::{self, Item, Settings};
 use crate::overlay::{Overlay, OverlayResult};
@@ -187,6 +188,9 @@ impl SnapApp {
             let _ = copy_to_clipboard(&doc.image);
         }
         let mut ed = Editor::new(id.clone(), doc);
+        if let Some(prev) = &self.editor {
+            ed.inherit(prev);
+        }
         ed.dirty = true;
         ed.image_changed = true;
         self.items.insert(0, Item { id, thumb: None, texture: None });
@@ -200,7 +204,13 @@ impl SnapApp {
         }
         self.flush_save(true);
         match library::load(id) {
-            Ok(doc) => self.editor = Some(Editor::new(id.to_string(), doc)),
+            Ok(doc) => {
+                let mut ed = Editor::new(id.to_string(), doc);
+                if let Some(prev) = &self.editor {
+                    ed.inherit(prev);
+                }
+                self.editor = Some(ed);
+            }
             Err(e) => self.notify(format!("Konnte nicht laden: {e}")),
         }
     }
@@ -236,42 +246,48 @@ impl SnapApp {
         }
     }
 
-    fn quick_save(&mut self) {
-        let Some(img) = self.rendered() else { return };
-        let name = format!("SnapIt {}.{}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"), self.settings.format);
-        let path = self.settings.save_dir.join(name);
-        match library::export(&img, &path) {
+    fn default_name(ext: &str) -> String {
+        format!("SnapIt {}.{ext}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"))
+    }
+
+    fn export_to(&mut self, img: &RgbaImage, path: &std::path::Path) {
+        match library::export(img, path, self.settings.jpeg_quality) {
             Ok(()) => self.notify(format!("Gespeichert: {}", path.display())),
             Err(e) => self.notify(format!("Speichern fehlgeschlagen: {e}")),
         }
     }
 
-    fn save_as(&mut self) {
+    fn quick_save(&mut self) {
         let Some(img) = self.rendered() else { return };
-        let name = format!("SnapIt {}.{}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"), self.settings.format);
+        let path = self.settings.save_dir.join(Self::default_name(&self.settings.format));
+        self.export_to(&img, &path);
+    }
+
+    /// Speichern-Dialog; mit `format` nur dieses Format, sonst alle (Standardformat zuerst).
+    fn save_as(&mut self, format: Option<&str>) {
+        let Some(img) = self.rendered() else { return };
+        let ext = format.unwrap_or(&self.settings.format).to_string();
         let _ = std::fs::create_dir_all(&self.settings.save_dir);
-        let Some(path) = rfd::FileDialog::new()
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(format!("Exportieren als {}", library::format_name(&ext)))
             .set_directory(&self.settings.save_dir)
-            .set_file_name(name)
-            .add_filter("PNG", &["png"])
-            .add_filter("JPEG", &["jpg", "jpeg"])
-            .add_filter("WebP", &["webp"])
-            .add_filter("BMP", &["bmp"])
-            .add_filter("GIF", &["gif"])
-            .add_filter("TIFF", &["tiff"])
-            .save_file()
-        else {
-            return;
-        };
-        match library::export(&img, &path) {
-            Ok(()) => self.notify(format!("Gespeichert: {}", path.display())),
-            Err(e) => self.notify(format!("Speichern fehlgeschlagen: {e}")),
+            .set_file_name(Self::default_name(&ext));
+        let mut formats: Vec<_> = library::FORMATS.iter().filter(|f| format.is_none() || f.0 == ext).collect();
+        formats.sort_by_key(|f| f.0 != ext);
+        for (main, name, alt) in formats {
+            let exts: Vec<&str> = std::iter::once(*main).chain(alt.iter().copied()).collect();
+            dialog = dialog.add_filter(*name, &exts);
         }
+        let Some(mut path) = dialog.save_file() else { return };
+        if path.extension().is_none() {
+            path.set_extension(&ext);
+        }
+        self.export_to(&img, &path);
     }
 
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Bilder", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tiff"])
+            .add_filter("Bilder", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tiff", "tif"])
             .pick_file()
         {
             self.open_path(&path);
@@ -297,73 +313,100 @@ impl SnapApp {
 
     // ---------- UI ----------
 
+    /// Obere Leiste: Aufnahme/Datei links, Werkzeuge mittig, Ausgabe rechts.
     fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        let full = ui.max_rect();
+        let tool = Look::Tool { selected: false };
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(4.0);
-            for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
-                let icon = ["⛶", "🗔", "🖵", "🖥"][i];
-                let text = RichText::new(format!("{icon}  {}", kind.label())).size(14.0);
-                let btn = egui::Button::new(text).fill(if i == 0 { Color32::from_rgb(220, 90, 20) } else { ui.visuals().widgets.inactive.bg_fill });
-                let tip = match self.shortcut_text(i) {
-                    Some(s) => format!("{} aufnehmen ({s})", kind.label()),
-                    None => format!("{} aufnehmen", kind.label()),
-                };
-                if ui.add(btn).on_hover_text(tip).clicked() {
-                    self.start_capture(ctx, kind);
-                }
-            }
-            ui.separator();
-            ui.label("⏱");
-            let mut d = self.settings.delay_secs;
-            egui::ComboBox::from_id_salt("delay")
-                .width(70.0)
-                .selected_text(if d == 0 { "sofort".into() } else { format!("{d} s") })
-                .show_ui(ui, |ui| {
-                    for v in [0, 1, 3, 5, 10] {
-                        ui.selectable_value(&mut d, v, if v == 0 { "sofort".into() } else { format!("{v} s") });
-                    }
-                });
-            if d != self.settings.delay_secs {
-                self.settings.delay_secs = d;
-                self.settings.save();
-            }
-            ui.separator();
-            if ui.button("📋 Einfügen").on_hover_text("Bild aus Zwischenablage").clicked() {
-                self.paste();
-            }
-            if ui.button("📂 Öffnen").clicked() {
+            let resp = bar_button(ui, "⏺", "Aufnahme", Look::Primary, true, true).on_hover_text("Aufnahmemodus wählen");
+            egui::Popup::menu(&resp).show(|ui| self.capture_menu(ctx, ui));
+            if bar_button(ui, "📂", "Öffnen", tool, true, false).on_hover_text("Bild öffnen (⌘O)").clicked() {
                 self.open_file();
             }
+            if bar_button(ui, "📋", "Einfügen", tool, true, false).on_hover_text("Bild aus der Zwischenablage").clicked() {
+                self.paste();
+            }
+            bar_separator(ui);
+            let (cu, cr) = self.editor.as_ref().map(|e| (e.can_undo(), e.can_redo())).unwrap_or_default();
+            if bar_button(ui, "↶", "Zurück", tool, cu, false).on_hover_text("Rückgängig (⌘Z)").clicked() {
+                if let Some(e) = &mut self.editor {
+                    e.undo();
+                }
+            }
+            if bar_button(ui, "↷", "Vor", tool, cr, false).on_hover_text("Wiederholen (⌘⇧Z)").clicked() {
+                if let Some(e) = &mut self.editor {
+                    e.redo();
+                }
+            }
+
+            // Werkzeuge mittig ausrichten
+            let start = (full.center().x - editor::tool_bar_width(ui) / 2.0).max(ui.cursor().min.x + 16.0);
+            ui.add_space(start - ui.cursor().min.x);
+            editor::tool_bar(ui, self.editor.as_mut());
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚙").on_hover_text("Einstellungen").clicked() {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.add_space(4.0);
+                if bar_button(ui, "⚙", "Einstellungen", tool, true, false).clicked() {
                     self.show_settings = true;
                 }
                 let has = self.editor.is_some();
-                ui.add_enabled_ui(has, |ui| {
-                    if ui.button("💾 Speichern unter…").on_hover_text("⌘⇧S").clicked() {
-                        self.save_as();
-                    }
-                    if ui.button("💾 Speichern").on_hover_text("Schnell speichern in den Zielordner (⌘S)").clicked() {
+                let resp = bar_button(ui, "💾", "Speichern", Look::Primary, has, true);
+                egui::Popup::menu(&resp).show(|ui| {
+                    ui.set_min_width(220.0);
+                    let quick = format!("Schnell speichern ({})", library::format_name(&self.settings.format));
+                    if ui.add(egui::Button::new(quick).shortcut_text("⌘S")).clicked() {
                         self.quick_save();
+                        ui.close();
                     }
-                    if ui.button("📋 Kopieren").on_hover_text("⌘C").clicked() {
-                        self.copy();
+                    if ui.add(egui::Button::new("Speichern unter …").shortcut_text("⌘⇧S")).clicked() {
+                        ui.close();
+                        self.save_as(None);
                     }
+                    ui.menu_button("Exportieren als", |ui| {
+                        for (ext, name, _) in library::FORMATS {
+                            if ui.button(format!("{name}  (.{ext})")).clicked() {
+                                ui.close();
+                                self.save_as(Some(ext));
+                            }
+                        }
+                    });
                     ui.separator();
-                    let (cr, cu) = self.editor.as_ref().map(|e| (e.can_redo(), e.can_undo())).unwrap_or_default();
-                    if ui.add_enabled(cr, egui::Button::new("↷")).on_hover_text("Wiederholen (⌘⇧Z)").clicked() {
-                        if let Some(e) = &mut self.editor {
-                            e.redo()
-                        }
-                    }
-                    if ui.add_enabled(cu, egui::Button::new("↶")).on_hover_text("Rückgängig (⌘Z)").clicked() {
-                        if let Some(e) = &mut self.editor {
-                            e.undo()
-                        }
+                    if ui.button("Zielordner im Finder zeigen").clicked() {
+                        let _ = std::fs::create_dir_all(&self.settings.save_dir);
+                        let _ = std::process::Command::new("open").arg(&self.settings.save_dir).spawn();
+                        ui.close();
                     }
                 });
+                if bar_button(ui, "⧉", "Kopieren", tool, has, false).on_hover_text("In die Zwischenablage (⌘C)").clicked() {
+                    self.copy();
+                }
             });
+        });
+    }
+
+    fn capture_menu(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.set_min_width(240.0);
+        for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
+            let icon = ["⛶", "🗔", "🖵", "🖥"][i];
+            let btn = egui::Button::new(format!("{icon}  {}", kind.label())).shortcut_text(self.shortcut_text(i).unwrap_or_default());
+            if ui.add(btn).clicked() {
+                ui.close();
+                self.start_capture(ctx, kind);
+            }
+        }
+        ui.separator();
+        ui.weak("Verzögerung");
+        ui.horizontal(|ui| {
+            for v in [0, 1, 3, 5, 10] {
+                let label = if v == 0 { "sofort".to_string() } else { format!("{v} s") };
+                if ui.selectable_label(self.settings.delay_secs == v, label).clicked() {
+                    self.settings.delay_secs = v;
+                    self.settings.save();
+                }
+            }
         });
     }
 
@@ -397,7 +440,7 @@ impl SnapApp {
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "…", Default::default(), Color32::GRAY);
                     }
                     let stroke = if selected {
-                        egui::Stroke::new(3.0, Color32::from_rgb(255, 120, 30))
+                        egui::Stroke::new(3.0, ORANGE)
                     } else if resp.hovered() {
                         egui::Stroke::new(1.5, Color32::GRAY)
                     } else {
@@ -437,7 +480,7 @@ impl SnapApp {
                 let hk = self.shortcut_text(i).unwrap_or_default();
                 let txt = RichText::new(format!("{}   {hk}", kind.label())).size(18.0);
                 let btn = egui::Button::new(txt).min_size(Vec2::new(260.0, 44.0));
-                let btn = if i == 0 { btn.fill(Color32::from_rgb(220, 90, 20)) } else { btn };
+                let btn = if i == 0 { btn.fill(ORANGE) } else { btn };
                 if ui.add(btn).clicked() {
                     self.start_capture(ctx, kind);
                 }
@@ -465,9 +508,17 @@ impl SnapApp {
             });
             ui.horizontal(|ui| {
                 ui.label("Format (Schnellspeichern):");
-                for f in ["png", "jpg", "webp"] {
-                    changed |= ui.selectable_value(&mut self.settings.format, f.to_string(), f.to_uppercase()).changed();
-                }
+                egui::ComboBox::from_id_salt("format")
+                    .selected_text(library::format_name(&self.settings.format))
+                    .show_ui(ui, |ui| {
+                        for (ext, name, _) in library::FORMATS {
+                            changed |= ui.selectable_value(&mut self.settings.format, ext.to_string(), name).changed();
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("JPEG-/PDF-Qualität:");
+                changed |= ui.add(egui::Slider::new(&mut self.settings.jpeg_quality, 50..=100).suffix(" %")).changed();
             });
             changed |= ui.checkbox(&mut self.settings.copy_after_capture, "Nach Aufnahme automatisch in Zwischenablage kopieren").changed();
             ui.separator();
@@ -535,7 +586,7 @@ impl SnapApp {
             }
             ui.separator();
             ui.label(RichText::new("Editor").strong());
-            ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · C Zuschneiden");
+            ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · F Füllen · C Zuschneiden");
             ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
             ui.separator();
             ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
@@ -683,7 +734,7 @@ impl SnapApp {
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
         if cmd && ctx.input(|i| i.key_pressed(egui::Key::S)) {
             if shift {
-                self.save_as()
+                self.save_as(None)
             } else {
                 self.quick_save()
             }
@@ -757,8 +808,11 @@ impl eframe::App for SnapApp {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
 
-        egui::TopBottomPanel::top("toolbar").exact_height(44.0).show(ctx, |ui| {
-            ui.add_space(6.0);
+        let bar_frame = egui::Frame::new()
+            .fill(ctx.style().visuals.window_fill)
+            .inner_margin(egui::Margin::symmetric(4, 4))
+            .stroke(ctx.style().visuals.widgets.noninteractive.bg_stroke);
+        egui::TopBottomPanel::top("toolbar").exact_height(ui_kit::BAR_HEIGHT).frame(bar_frame).show(ctx, |ui| {
             self.toolbar(ctx, ui);
         });
 
@@ -784,9 +838,6 @@ impl eframe::App for SnapApp {
         }
 
         if let Some(ed) = &mut self.editor {
-            egui::SidePanel::left("tools").exact_width(52.0).resizable(false).show(ctx, |ui| {
-                ui.vertical_centered(|ui| ed.tools_ui(ui));
-            });
             egui::SidePanel::right("props").default_width(250.0).show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| ed.properties_ui(ui));
             });

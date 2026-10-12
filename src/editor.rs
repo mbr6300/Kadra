@@ -27,11 +27,12 @@ pub enum Tool {
     Blur,
     Pixelate,
     Spotlight,
+    Fill,
     Crop,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Select,
         Tool::Arrow,
         Tool::Line,
@@ -44,6 +45,7 @@ impl Tool {
         Tool::Blur,
         Tool::Pixelate,
         Tool::Spotlight,
+        Tool::Fill,
         Tool::Crop,
     ];
 
@@ -61,6 +63,7 @@ impl Tool {
             Tool::Blur => "💧",
             Tool::Pixelate => "▦",
             Tool::Spotlight => "🔦",
+            Tool::Fill => "🎨",
             Tool::Crop => "✂",
         }
     }
@@ -79,6 +82,7 @@ impl Tool {
             Tool::Blur => "Weichzeichnen",
             Tool::Pixelate => "Verpixeln",
             Tool::Spotlight => "Spotlight",
+            Tool::Fill => "Füllen",
             Tool::Crop => "Zuschneiden",
         }
     }
@@ -97,6 +101,7 @@ impl Tool {
             Tool::Blur => Key::B,
             Tool::Pixelate => Key::X,
             Tool::Spotlight => Key::S,
+            Tool::Fill => Key::F,
             Tool::Crop => Key::C,
         }
     }
@@ -114,6 +119,7 @@ impl Tool {
             Shape::Blur { .. } => Tool::Blur,
             Shape::Pixelate { .. } => Tool::Pixelate,
             Shape::Spotlight { .. } => Tool::Spotlight,
+            Shape::Fill { .. } => Tool::Fill,
         }
     }
 
@@ -126,9 +132,77 @@ impl Tool {
             Tool::Blur => Style { width: 6.0, shadow: false, ..base },
             Tool::Pixelate => Style { width: 4.0, shadow: false, ..base },
             Tool::Pen => Style { width: 4.0, ..base },
+            // width = Toleranz in Prozent
+            Tool::Fill => Style { stroke: [255, 225, 0, 255], width: 15.0, shadow: false, ..base },
             _ => base,
         }
     }
+}
+
+/// Werkzeuggruppe in der oberen Leiste; mehrere Werkzeuge teilen sich einen Button.
+pub struct ToolGroup {
+    pub name: &'static str,
+    pub tools: &'static [Tool],
+}
+
+pub const MAIN_GROUPS: [ToolGroup; 9] = [
+    ToolGroup { name: "Auswahl", tools: &[Tool::Select] },
+    ToolGroup { name: "Pfeil", tools: &[Tool::Arrow] },
+    ToolGroup { name: "Text", tools: &[Tool::Text] },
+    ToolGroup { name: "Formen", tools: &[Tool::Rect, Tool::Ellipse, Tool::Line] },
+    ToolGroup { name: "Nummer", tools: &[Tool::Step] },
+    ToolGroup { name: "Marker", tools: &[Tool::Highlight] },
+    ToolGroup { name: "Füllen", tools: &[Tool::Fill] },
+    ToolGroup { name: "Unkenntlich", tools: &[Tool::Blur, Tool::Pixelate] },
+    ToolGroup { name: "Zuschneiden", tools: &[Tool::Crop] },
+];
+
+/// Seltener genutzte Werkzeuge im „Mehr“-Menü.
+pub const MORE_TOOLS: [Tool; 2] = [Tool::Pen, Tool::Spotlight];
+
+fn group_of(t: Tool) -> Option<&'static ToolGroup> {
+    MAIN_GROUPS.iter().find(|g| g.tools.contains(&t))
+}
+
+/// Werkzeugleiste (Mitte der oberen Leiste). Ohne offenes Bild ausgegraut.
+pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>) {
+    use crate::ui_kit::{bar_button, bar_separator, Look};
+    let enabled = editor.is_some();
+    let current = editor.as_ref().map(|e| e.tool);
+    for g in &MAIN_GROUPS {
+        let shown = current
+            .filter(|t| g.tools.contains(t))
+            .or_else(|| editor.as_ref().and_then(|e| e.group_last.get(g.name).copied()))
+            .unwrap_or(g.tools[0]);
+        let selected = current.is_some_and(|t| g.tools.contains(&t));
+        let tip = g.tools.iter().map(|t| format!("{} ({})", t.name(), t.key().name())).collect::<Vec<_>>().join(" · ");
+        let resp = bar_button(ui, shown.icon(), g.name, Look::Tool { selected }, enabled, false).on_hover_text(tip);
+        if resp.clicked() {
+            if let Some(e) = editor.as_deref_mut() {
+                e.set_tool(shown);
+            }
+        }
+    }
+    bar_separator(ui);
+    let more_selected = current.is_some_and(|t| MORE_TOOLS.contains(&t));
+    let icon = current.filter(|t| MORE_TOOLS.contains(t)).map(|t| t.icon()).unwrap_or("⋯");
+    let resp = bar_button(ui, icon, "Mehr", Look::Tool { selected: more_selected }, enabled, true);
+    egui::Popup::menu(&resp).show(|ui| {
+        for t in MORE_TOOLS {
+            if ui.button(format!("{}  {}   ({})", t.icon(), t.name(), t.key().name())).clicked() {
+                if let Some(e) = editor.as_deref_mut() {
+                    e.set_tool(t);
+                }
+                ui.close();
+            }
+        }
+    });
+}
+
+/// Breite der Werkzeugleiste (für die Zentrierung).
+pub fn tool_bar_width(ui: &Ui) -> f32 {
+    let n = MAIN_GROUPS.len() as f32 + 1.0;
+    n * crate::ui_kit::TOOL_WIDTH + n * ui.spacing().item_spacing.x + 13.0 + 20.0
 }
 
 #[derive(Clone)]
@@ -168,6 +242,8 @@ pub struct Editor {
     pub image_changed: bool,
     pub last_change: Instant,
     resize_pct: f32,
+    /// Zuletzt gewähltes Werkzeug je Gruppe (Gruppenname → Werkzeug).
+    group_last: HashMap<&'static str, Tool>,
 }
 
 fn c32(c: Rgba) -> Color32 {
@@ -211,6 +287,7 @@ impl Editor {
             image_changed: false,
             last_change: Instant::now(),
             resize_pct: 50.0,
+            group_last: HashMap::new(),
         }
     }
 
@@ -300,6 +377,9 @@ impl Editor {
     pub fn set_tool(&mut self, t: Tool) {
         self.finish_text();
         self.tool = t;
+        if let Some(g) = group_of(t) {
+            self.group_last.insert(g.name, t);
+        }
         self.crop = None;
         if t != Tool::Select {
             self.selected = None;
@@ -413,22 +493,29 @@ impl Editor {
 
     // ---------- Panels ----------
 
-    pub fn tools_ui(&mut self, ui: &mut Ui) {
-        ui.add_space(6.0);
-        for t in Tool::ALL {
-            let btn = egui::Button::new(egui::RichText::new(t.icon()).size(20.0))
-                .selected(self.tool == t)
-                .min_size(Vec2::new(40.0, 36.0));
-            if ui.add(btn).on_hover_text(format!("{} ({:?})", t.name(), t.key())).clicked() {
-                self.set_tool(t);
-            }
-        }
+    /// Werkzeug, Stile und Gruppenwahl aus dem vorherigen Editor übernehmen.
+    pub fn inherit(&mut self, prev: &Editor) {
+        self.tool = if prev.tool == Tool::Crop { Tool::Select } else { prev.tool };
+        self.styles = prev.styles.clone();
+        self.group_last = prev.group_last.clone();
     }
 
     pub fn properties_ui(&mut self, ui: &mut Ui) {
         let sel = self.selected.filter(|i| *i < self.doc.annotations.len());
         let kind = sel.map(|i| Tool::of(&self.doc.annotations[i].shape)).unwrap_or(self.tool);
         ui.heading(if sel.is_some() { format!("{} (Auswahl)", kind.name()) } else { kind.name().to_string() });
+        // Varianten einer Werkzeuggruppe (z. B. Rechteck/Ellipse/Linie)
+        if sel.is_none() {
+            if let Some(g) = group_of(self.tool).filter(|g| g.tools.len() > 1) {
+                ui.horizontal(|ui| {
+                    for t in g.tools {
+                        if ui.selectable_label(self.tool == *t, format!("{} {}", t.icon(), t.name())).clicked() {
+                            self.set_tool(*t);
+                        }
+                    }
+                });
+            }
+        }
         ui.separator();
 
         if kind == Tool::Crop {
@@ -706,7 +793,7 @@ impl Editor {
                     }
                 }
                 Tool::Crop => Some(Drag::Crop { start }),
-                Tool::Text | Tool::Step => None,
+                Tool::Text | Tool::Step | Tool::Fill => None,
                 t => {
                     let shape = new_shape(t, p(start));
                     Some(Drag::Create { ann: Annotation { shape, style: self.styles[&t].clone() }, start })
@@ -784,6 +871,16 @@ impl Editor {
                         });
                         self.selected = Some(self.doc.annotations.len() - 1);
                     }
+                    Tool::Fill => {
+                        if Rect::from_min_size(Pos2::ZERO, size).contains(q) {
+                            self.push_undo();
+                            self.doc.annotations.push(Annotation {
+                                shape: Shape::Fill { pos: p(q) },
+                                style: self.styles[&Tool::Fill].clone(),
+                            });
+                            self.selected = Some(self.doc.annotations.len() - 1);
+                        }
+                    }
                     Tool::Select => self.selected = self.hit(q, tol),
                     _ => {}
                 }
@@ -848,6 +945,14 @@ impl Editor {
         // Effekt-Bereiche im Auswahlmodus andeuten
         if self.tool == Tool::Select {
             for a in self.doc.annotations.iter().filter(|a| a.shape.is_effect()) {
+                if let Shape::Fill { pos: fp } = &a.shape {
+                    // Ansatzpunkt der Füllung als Markierung
+                    let c = to_scr(pos(*fp));
+                    clip.circle_filled(c, 5.0, c32(a.style.stroke));
+                    clip.circle_stroke(c, 6.0, Stroke::new(1.5, Color32::WHITE));
+                    clip.circle_stroke(c, 7.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
+                    continue;
+                }
                 let r = bounds(a);
                 let r = Rect::from_min_max(to_scr(r.min), to_scr(r.max));
                 clip.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(60)), StrokeKind::Middle);
@@ -1017,6 +1122,8 @@ pub fn bounds(a: &Annotation) -> Rect {
             Rect::from_min_size(pos(*tp), Vec2::new(tw.max(10.0), th))
         }
         Shape::Step { pos: c, .. } => Rect::from_center_size(pos(*c), Vec2::splat(render::step_radius(a.style.font_size) * 2.0)),
+        // Füllung: nur der Ansatzpunkt ist greifbar
+        Shape::Fill { pos: c } => Rect::from_center_size(pos(*c), Vec2::splat(12.0)),
     }
 }
 
@@ -1137,7 +1244,7 @@ pub fn paint_annotation(painter: &Painter, a: &Annotation, img_rect: Rect, zoom:
                 painter.rect_filled(Rect::from_min_max(Pos2::new(s.max.x, s.min.y), Pos2::new(o.max.x, s.max.y)), 0.0, dim);
             }
         }
-        Shape::Blur { .. } | Shape::Pixelate { .. } => {}
+        Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Fill { .. } => {}
     }
 }
 
@@ -1198,9 +1305,17 @@ fn style_ui(ui: &mut Ui, kind: Tool, st: &mut Style) {
                 ui.add(egui::Slider::new(&mut st.font_size, 8.0..=200.0).suffix(" px"));
             });
         }
+        Tool::Fill => {
+            ui.horizontal(|ui| {
+                ui.label("Toleranz");
+                ui.add(egui::Slider::new(&mut st.width, 0.0..=100.0).suffix(" %"));
+            });
+            ui.weak("In eine Fläche klicken: zusammenhängende Pixel ähnlicher Farbe werden gefüllt. \
+                     Höhere Toleranz erfasst mehr Farbtöne. Transparenz über den Farbwähler.");
+        }
         _ => {}
     }
-    if !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Highlight) {
+    if !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Highlight | Tool::Fill) {
         ui.checkbox(&mut st.shadow, "Schatten");
     }
 }

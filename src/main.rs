@@ -9,6 +9,7 @@ mod library;
 mod overlay;
 mod platform;
 mod render;
+mod ui_kit;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

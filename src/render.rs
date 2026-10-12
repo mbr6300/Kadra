@@ -31,10 +31,14 @@ pub fn step_radius(style_font: f32) -> f32 {
     style_font * 0.75
 }
 
-/// Wendet Weichzeichnen/Verpixeln auf eine Kopie des Bildes an.
+/// Wendet Weichzeichnen/Verpixeln/Füllen auf eine Kopie des Bildes an.
 pub fn apply_effects(base: &RgbaImage, anns: &[Annotation]) -> RgbaImage {
     let mut img = base.clone();
     for a in anns {
+        if let Shape::Fill { pos } = &a.shape {
+            flood_fill(&mut img, pos[0], pos[1], a.style.width, a.style.stroke);
+            continue;
+        }
         let (pa, pb, blur) = match &a.shape {
             Shape::Blur { a, b } => (*a, *b, true),
             Shape::Pixelate { a, b } => (*a, *b, false),
@@ -59,6 +63,56 @@ pub fn apply_effects(base: &RgbaImage, anns: &[Annotation]) -> RgbaImage {
         imageops::replace(&mut img, &out, x0 as i64, y0 as i64);
     }
     img
+}
+
+/// Füllt die zusammenhängende Fläche ähnlicher Farbe ab (x, y).
+/// `tolerance` 0–100 = erlaubte Abweichung je Farbkanal in Prozent.
+pub fn flood_fill(img: &mut RgbaImage, x: f32, y: f32, tolerance: f32, color: Rgba) {
+    let (w, h) = img.dimensions();
+    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+        return;
+    }
+    let (sx, sy) = (x as u32, y as u32);
+    let seed = img.get_pixel(sx, sy).0;
+    let tol = (tolerance.clamp(0.0, 100.0) / 100.0 * 255.0) as i32;
+    let similar = |p: [u8; 4]| (0..4).all(|i| (p[i] as i32 - seed[i] as i32).abs() <= tol);
+
+    // Scanline-Füllung mit Besucht-Maske
+    let mut mask = vec![false; (w * h) as usize];
+    let mut stack = vec![(sx, sy)];
+    while let Some((x, y)) = stack.pop() {
+        let row = (y * w) as usize;
+        if mask[row + x as usize] || !similar(img.get_pixel(x, y).0) {
+            continue;
+        }
+        let mut l = x;
+        while l > 0 && !mask[row + l as usize - 1] && similar(img.get_pixel(l - 1, y).0) {
+            l -= 1;
+        }
+        let mut r = x;
+        while r + 1 < w && !mask[row + r as usize + 1] && similar(img.get_pixel(r + 1, y).0) {
+            r += 1;
+        }
+        for i in l..=r {
+            mask[row + i as usize] = true;
+            if y > 0 && !mask[row - w as usize + i as usize] {
+                stack.push((i, y - 1));
+            }
+            if y + 1 < h && !mask[row + w as usize + i as usize] {
+                stack.push((i, y + 1));
+            }
+        }
+    }
+
+    let a = color[3] as f32 / 255.0;
+    for (i, px) in img.pixels_mut().enumerate() {
+        if mask[i] {
+            for c in 0..3 {
+                px.0[c] = (color[c] as f32 * a + px.0[c] as f32 * (1.0 - a)) as u8;
+            }
+            px.0[3] = (255.0 * a + px.0[3] as f32 * (1.0 - a)) as u8;
+        }
+    }
 }
 
 fn pixelate(img: &RgbaImage, block: u32) -> RgbaImage {
@@ -287,12 +341,12 @@ fn draw_shape(pm: &mut Pixmap, ann: &Annotation, off: f32, shadow: bool) {
                 }
             }
         }
-        Shape::Blur { .. } | Shape::Pixelate { .. } => {}
+        Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Fill { .. } => {}
     }
 }
 
 pub fn casts_shadow(a: &Annotation) -> bool {
-    a.style.shadow && !matches!(a.shape, Shape::Highlight { .. } | Shape::Spotlight { .. } | Shape::Blur { .. } | Shape::Pixelate { .. })
+    a.style.shadow && !matches!(a.shape, Shape::Highlight { .. } | Shape::Spotlight { .. }) && !a.shape.is_effect()
 }
 
 pub fn shadow_offset(a: &Annotation) -> f32 {
@@ -362,6 +416,29 @@ pub fn apply_frame_effects(mut img: RgbaImage, fx: &Effects) -> RgbaImage {
 mod tests {
     use super::*;
     use crate::doc::{Annotation, Document, Effects, Style};
+
+    #[test]
+    fn flood_fill_respects_borders_and_tolerance() {
+        // Weiße Fläche mit schwarzer senkrechter Linie bei x = 5; links leicht abweichendes Weiß
+        let mut img = RgbaImage::from_pixel(10, 4, Px([255, 255, 255, 255]));
+        for y in 0..4 {
+            img.put_pixel(5, y, Px([0, 0, 0, 255]));
+            img.put_pixel(1, y, Px([245, 245, 245, 255]));
+        }
+        let red = [255, 0, 0, 255];
+
+        let mut strict = img.clone();
+        flood_fill(&mut strict, 0.0, 0.0, 0.0, red);
+        assert_eq!(strict.get_pixel(0, 3).0, red);
+        assert_eq!(strict.get_pixel(1, 0).0, [245, 245, 245, 255], "abweichende Farbe ohne Toleranz nicht füllen");
+        assert_eq!(strict.get_pixel(3, 0).0, [255, 255, 255, 255], "hinter der abweichenden Spalte nicht weiterlaufen");
+
+        let mut loose = img.clone();
+        flood_fill(&mut loose, 0.0, 0.0, 10.0, red);
+        assert_eq!(loose.get_pixel(4, 3).0, red, "mit Toleranz bis zur Linie füllen");
+        assert_eq!(loose.get_pixel(5, 0).0, [0, 0, 0, 255], "Linie bleibt");
+        assert_eq!(loose.get_pixel(7, 0).0, [255, 255, 255, 255], "rechts der Linie bleibt unberührt");
+    }
 
     #[test]
     fn renders_all_shapes() {

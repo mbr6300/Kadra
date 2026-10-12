@@ -32,12 +32,14 @@ pub enum Shape {
     Blur { a: P, b: P },
     Pixelate { a: P, b: P },
     Spotlight { a: P, b: P },
+    /// Farbeimer: füllt die zusammenhängende Fläche ab `pos` (Toleranz = style.width).
+    Fill { pos: P },
 }
 
 impl Shape {
     /// Raster-Effekte werden direkt ins Basisbild gerechnet.
     pub fn is_effect(&self) -> bool {
-        matches!(self, Shape::Blur { .. } | Shape::Pixelate { .. })
+        matches!(self, Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Fill { .. })
     }
 
     pub fn translate(&mut self, d: Vec2) {
@@ -60,7 +62,7 @@ impl Shape {
                 mv(b);
             }
             Shape::Pen { pts } => pts.iter_mut().for_each(mv),
-            Shape::Text { pos, .. } | Shape::Step { pos, .. } => mv(pos),
+            Shape::Text { pos, .. } | Shape::Step { pos, .. } | Shape::Fill { pos } => mv(pos),
         }
     }
 

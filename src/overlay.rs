@@ -27,7 +27,7 @@ pub struct Overlay {
     message: Option<String>,
 }
 
-const ACCENT: Color32 = Color32::from_rgb(255, 120, 30);
+const ACCENT: Color32 = crate::ui_kit::ORANGE;
 
 impl Overlay {
     pub fn new(ctx: &egui::Context, grab: Grab) -> Self {

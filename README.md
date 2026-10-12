@@ -27,7 +27,9 @@ Zusätzlich: Verzögerung (1–10 s), Bild aus Zwischenablage, Datei öffnen, Dr
 ## Nachbearbeitung
 
 Werkzeuge (Taste): Auswahl (V), Pfeil (A), Linie (L), Rechteck (R), Ellipse (E), Stift (P),
-Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Spotlight (S), Zuschneiden (C).
+Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Spotlight (S), Füllen (F), Zuschneiden (C).
+
+- Füllen (Farbeimer): füllt die zusammenhängende Fläche ähnlicher Farbe; Toleranz und Farbe (inkl. Transparenz) bleiben nachträglich änderbar
 
 - Alle Anmerkungen bleiben editierbar: verschieben, Größe über Griffe ändern, Farbe/Stärke/Füllung/Schatten anpassen
 - Shift beim Zeichnen: 45°-Winkel bzw. Quadrat/Kreis
@@ -37,7 +39,9 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sp
 
 ## Ausgabe & Bibliothek
 
-- Kopieren (⌘C), Schnellspeichern (⌘S) in `~/Pictures/SnapIt`, Speichern unter (⌘⇧S): PNG, JPEG, WebP, BMP, GIF, TIFF
+- Kopieren (⌘C), Schnellspeichern (⌘S) in `~/Pictures/SnapIt`, Speichern unter (⌘⇧S), „Exportieren als ▸“
+- Formate: PNG, JPEG, TIFF, WebP, GIF, BMP, PDF – Schnellspeicher-Format und JPEG-/PDF-Qualität in den Einstellungen
+- Formate ohne Transparenz (JPEG, BMP, PDF) bekommen weißen Hintergrund
 - Jede Aufnahme landet automatisch in der Bibliothek (Leiste unten) und bleibt dort editierbar:
   `~/Library/Application Support/SnapIt/library/` (Original-PNG + Anmerkungen als JSON)
 
