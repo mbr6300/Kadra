@@ -43,6 +43,9 @@ pub struct SnapApp {
     /// Index des Modus, für den gerade ein neues Kürzel aufgenommen wird.
     recording: Option<usize>,
     recording_hint: Option<String>,
+    pending_export: Option<PendingExport>,
+    estimate_tx: Sender<(u8, usize)>,
+    estimate_rx: Receiver<(u8, usize)>,
 }
 
 /// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ als Ersatz anhängen (fehlen in den egui-Schriften).
@@ -61,6 +64,7 @@ impl SnapApp {
         let settings = Settings::load();
         let (thumb_tx, thumb_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
+        let (estimate_tx, estimate_rx) = channel();
 
         install_symbol_font(&cc.egui_ctx);
         let mut hotkeys = Hotkeys::new(&cc.egui_ctx, hk_tx);
@@ -92,6 +96,9 @@ impl SnapApp {
             hotkey_failed,
             recording: None,
             recording_hint: None,
+            pending_export: None,
+            estimate_tx,
+            estimate_rx,
         };
         // `snapit bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
@@ -282,7 +289,94 @@ impl SnapApp {
         if path.extension().is_none() {
             path.set_extension(&ext);
         }
-        self.export_to(&img, &path);
+        if library::has_quality(&path) {
+            // Qualität vor dem Schreiben abfragen (der Systemdialog kann das nicht).
+            self.pending_export = Some(PendingExport {
+                img: std::sync::Arc::new(img),
+                path,
+                quality: self.settings.jpeg_quality,
+                remember: false,
+                estimate: None,
+                requested: None,
+            });
+        } else {
+            self.export_to(&img, &path);
+        }
+    }
+
+    /// Dialog mit Qualitätsregler und geschätzter Dateigröße für JPEG/PDF.
+    fn export_dialog(&mut self, ctx: &egui::Context) {
+        while let Ok((q, size)) = self.estimate_rx.try_recv() {
+            if let Some(p) = &mut self.pending_export {
+                p.estimate = Some((q, size));
+            }
+        }
+        let Some(p) = &mut self.pending_export else { return };
+        // Größe für die aktuelle Qualität im Hintergrund berechnen
+        let dragging = ctx.input(|i| i.pointer.primary_down());
+        if p.requested != Some(p.quality) && !dragging {
+            p.requested = Some(p.quality);
+            let (img, q, tx, ctx2) = (p.img.clone(), p.quality, self.estimate_tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send((q, library::jpeg_size(&img, q)));
+                ctx2.request_repaint();
+            });
+        }
+        let name = p.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let fmt = library::format_name(&p.path.extension().and_then(|e| e.to_str()).unwrap_or("jpg").to_lowercase());
+        let (mut save, mut cancel) = (false, false);
+        egui::Window::new(format!("{fmt}-Export"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new(&name).strong());
+                ui.weak(format!("{} × {} px", p.img.width(), p.img.height()));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Qualität");
+                    ui.add(egui::Slider::new(&mut p.quality, 10..=100).suffix(" %"));
+                });
+                ui.horizontal(|ui| {
+                    for (label, q) in [("Klein", 60), ("Mittel", 80), ("Hoch", 90), ("Maximal", 100)] {
+                        if ui.selectable_label(p.quality == q, label).clicked() {
+                            p.quality = q;
+                        }
+                    }
+                });
+                let size = match p.estimate {
+                    Some((q, bytes)) if q == p.quality => format!("ca. {}", human_size(bytes)),
+                    Some((_, bytes)) => format!("ca. {} …", human_size(bytes)),
+                    None => "wird berechnet …".into(),
+                };
+                ui.label(format!("Dateigröße: {size}"));
+                ui.add_space(4.0);
+                ui.checkbox(&mut p.remember, "Als Standard merken (auch für Schnellspeichern)");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(ORANGE)).clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        save = true;
+                    }
+                    if ui.button("Abbrechen").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel = true;
+                    }
+                });
+            });
+        if save {
+            let p = self.pending_export.take().unwrap();
+            if p.remember {
+                self.settings.jpeg_quality = p.quality;
+                self.settings.save();
+            }
+            match library::export(&p.img, &p.path, p.quality) {
+                Ok(()) => self.notify(format!("Gespeichert: {}", p.path.display())),
+                Err(e) => self.notify(format!("Speichern fehlgeschlagen: {e}")),
+            }
+        } else if cancel {
+            self.pending_export = None;
+        }
     }
 
     fn open_file(&mut self) {
@@ -797,6 +891,8 @@ impl eframe::App for SnapApp {
         if self.recording.is_some() {
             // Tastendrücke gehören der Kürzel-Aufnahme, nicht dem Editor.
             self.record_shortcut(ctx);
+        } else if self.pending_export.is_some() {
+            // Export-Dialog offen: Tasten gehören dem Dialog.
         } else {
             self.global_shortcuts(ctx);
             if let Some(ed) = &mut self.editor {
@@ -847,6 +943,7 @@ impl eframe::App for SnapApp {
         }
 
         self.settings_window(ctx);
+        self.export_dialog(ctx);
         self.permission_dialog(ctx);
         self.delete_dialog(ctx);
     }
@@ -858,6 +955,24 @@ impl eframe::App for SnapApp {
                 let _ = library::save(&ed.id, &ed.doc, ed.image_changed);
             }
         }
+    }
+}
+
+/// Export, der noch auf die Qualitätswahl wartet.
+struct PendingExport {
+    img: std::sync::Arc<RgbaImage>,
+    path: std::path::PathBuf,
+    quality: u8,
+    remember: bool,
+    /// Zuletzt berechnete Größe: (Qualität, Bytes)
+    estimate: Option<(u8, usize)>,
+    requested: Option<u8>,
+}
+
+fn human_size(bytes: usize) -> String {
+    match bytes {
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1 << 20) as f64),
+        b => format!("{} KB", (b + 1023) / 1024),
     }
 }
 

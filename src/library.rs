@@ -160,11 +160,25 @@ pub fn export(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), Stri
     res.map_err(|e| e.to_string())
 }
 
+/// Formate mit einstellbarer Qualität.
+pub fn has_quality(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "pdf")
+}
+
+/// Größe des Bildes als JPEG in Bytes (für die Vorschau im Export-Dialog).
+pub fn jpeg_size(img: &RgbaImage, quality: u8) -> usize {
+    let rgb = image::DynamicImage::ImageRgba8(flatten_white(img)).to_rgb8();
+    let mut buf = Vec::new();
+    let _ = JpegEncoder::new_with_quality(&mut buf, quality.clamp(1, 100)).encode_image(&rgb);
+    buf.len()
+}
+
 /// Schreibt eine einseitige PDF mit dem Bild als JPEG (96 dpi Seitengröße).
 fn write_pdf(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), String> {
     let rgb = image::DynamicImage::ImageRgba8(flatten_white(img)).to_rgb8();
     let mut jpg = Vec::new();
-    JpegEncoder::new_with_quality(&mut jpg, jpeg_quality.max(85)).encode_image(&rgb).map_err(|e| e.to_string())?;
+    JpegEncoder::new_with_quality(&mut jpg, jpeg_quality.clamp(1, 100)).encode_image(&rgb).map_err(|e| e.to_string())?;
     let (w, h) = img.dimensions();
     let (pw, ph) = (w as f32 * 0.75, h as f32 * 0.75);
 
@@ -212,6 +226,16 @@ fn write_pdf(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jpeg_quality_changes_size() {
+        let mut img = RgbaImage::new(200, 150);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgba([(x * 7 % 256) as u8, (y * 13 % 256) as u8, ((x ^ y) % 256) as u8, 255]);
+        }
+        let (low, high) = (jpeg_size(&img, 30), jpeg_size(&img, 95));
+        assert!(low > 0 && low < high, "30 % = {low} B, 95 % = {high} B");
+    }
 
     #[test]
     fn exports_all_formats() {
