@@ -73,10 +73,7 @@ impl SnapApp {
             .map(|h| h.apply(&settings.shortcuts, settings.hotkeys))
             .unwrap_or_default();
 
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-        style.spacing.button_padding = Vec2::new(8.0, 4.0);
-        cc.egui_ctx.set_style(style);
+        ui_kit::apply_style(&cc.egui_ctx);
 
         let mut app = Self {
             settings,
@@ -328,41 +325,43 @@ impl SnapApp {
         egui::Window::new(format!("{fmt}-Export"))
             .collapsible(false)
             .resizable(false)
+            .min_width(440.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(RichText::new(&name).strong());
+                ui.label(RichText::new(&name).strong().size(15.0));
                 ui.weak(format!("{} × {} px", p.img.width(), p.img.height()));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                egui::Grid::new("export_opts").num_columns(2).spacing([16.0, 14.0]).show(ui, |ui| {
                     ui.label("Qualität");
                     ui.add(egui::Slider::new(&mut p.quality, 10..=100).suffix(" %"));
-                });
-                ui.horizontal(|ui| {
-                    for (label, q) in [("Klein", 60), ("Mittel", 80), ("Hoch", 90), ("Maximal", 100)] {
-                        if ui.selectable_label(p.quality == q, label).clicked() {
-                            p.quality = q;
+                    ui.end_row();
+
+                    ui.label("Voreinstellung");
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for (label, q) in [("Klein", 60), ("Mittel", 80), ("Hoch", 90), ("Maximal", 100)] {
+                            let btn = egui::Button::selectable(p.quality == q, label).min_size(Vec2::new(70.0, 30.0));
+                            if ui.add(btn).clicked() {
+                                p.quality = q;
+                            }
                         }
-                    }
+                    });
+                    ui.end_row();
+
+                    ui.label("Dateigröße");
+                    let size = match p.estimate {
+                        Some((q, bytes)) if q == p.quality => format!("ca. {}", human_size(bytes)),
+                        Some((_, bytes)) => format!("ca. {} …", human_size(bytes)),
+                        None => "wird berechnet …".into(),
+                    };
+                    ui.label(RichText::new(size).strong());
+                    ui.end_row();
                 });
-                let size = match p.estimate {
-                    Some((q, bytes)) if q == p.quality => format!("ca. {}", human_size(bytes)),
-                    Some((_, bytes)) => format!("ca. {} …", human_size(bytes)),
-                    None => "wird berechnet …".into(),
-                };
-                ui.label(format!("Dateigröße: {size}"));
-                ui.add_space(4.0);
+                ui.add_space(10.0);
                 ui.checkbox(&mut p.remember, "Als Standard merken (auch für Schnellspeichern)");
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(ORANGE)).clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        save = true;
-                    }
-                    if ui.button("Abbrechen").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        cancel = true;
-                    }
-                });
+                ui.separator();
+                (save, cancel) = ui_kit::dialog_buttons(ui, "Speichern", true);
             });
         if save {
             let p = self.pending_export.take().unwrap();
@@ -767,20 +766,25 @@ impl SnapApp {
                     if titles { "✔" } else { "✘" },
                     std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
                 ));
-                if ui.button("Erneut prüfen").clicked() && (preflight || titles) {
-                    self.show_permission = false;
-                }
                 ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(8.0);
+                let b = ui_kit::DIALOG_BUTTON;
                 ui.horizontal(|ui| {
-                    if ui.button("Einstellungen öffnen").clicked() {
-                        platform::open_privacy_settings();
-                    }
-                    if ui.button("SnapIt beenden").clicked() {
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                    }
-                    if ui.button("Schließen").clicked() {
+                    if ui.add(egui::Button::new("Erneut prüfen").min_size(b)).clicked() && (preflight || titles) {
                         self.show_permission = false;
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui_kit::primary_button(ui, "Einstellungen öffnen", true).clicked() {
+                            platform::open_privacy_settings();
+                        }
+                        if ui.add(egui::Button::new("SnapIt beenden").min_size(b)).clicked() {
+                            ctx.send_viewport_cmd(ViewportCommand::Close);
+                        }
+                        if ui.add(egui::Button::new("Schließen").min_size(b)).clicked() {
+                            self.show_permission = false;
+                        }
+                    });
                 });
             });
     }
@@ -788,22 +792,25 @@ impl SnapApp {
     fn delete_dialog(&mut self, ctx: &egui::Context) {
         let Some(id) = self.confirm_delete.clone() else { return };
         let mut close = false;
-        egui::Window::new("Löschen?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(format!("Aufnahme „{id}“ endgültig aus der Bibliothek löschen?"));
-            ui.horizontal(|ui| {
-                if ui.button("Löschen").clicked() {
+        egui::Window::new("Aufnahme löschen?")
+            .collapsible(false)
+            .resizable(false)
+            .min_width(380.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("„{id}“ wird endgültig aus der Bibliothek gelöscht."));
+                ui.weak("Dies kann nicht rückgängig gemacht werden.");
+                ui.add_space(6.0);
+                let (delete, cancel) = ui_kit::dialog_buttons(ui, "Löschen", true);
+                if delete {
                     library::delete(&id);
                     self.items.retain(|i| i.id != id);
                     if self.editor.as_ref().is_some_and(|e| e.id == id) {
                         self.editor = None;
                     }
-                    close = true;
                 }
-                if ui.button("Abbrechen").clicked() {
-                    close = true;
-                }
+                close = delete || cancel;
             });
-        });
         if close {
             self.confirm_delete = None;
         }
@@ -891,8 +898,8 @@ impl eframe::App for SnapApp {
         if self.recording.is_some() {
             // Tastendrücke gehören der Kürzel-Aufnahme, nicht dem Editor.
             self.record_shortcut(ctx);
-        } else if self.pending_export.is_some() {
-            // Export-Dialog offen: Tasten gehören dem Dialog.
+        } else if self.pending_export.is_some() || self.confirm_delete.is_some() {
+            // Dialog offen: Tasten gehören dem Dialog.
         } else {
             self.global_shortcuts(ctx);
             if let Some(ed) = &mut self.editor {
@@ -912,7 +919,7 @@ impl eframe::App for SnapApp {
             self.toolbar(ctx, ui);
         });
 
-        egui::TopBottomPanel::bottom("status").exact_height(22.0).show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("status").exact_height(28.0).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some((msg, t)) = &self.status {
                     if t.elapsed() < Duration::from_secs(6) {
@@ -934,8 +941,11 @@ impl eframe::App for SnapApp {
         }
 
         if let Some(ed) = &mut self.editor {
-            egui::SidePanel::right("props").default_width(250.0).show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| ed.properties_ui(ui));
+            egui::SidePanel::right("props").default_width(300.0).min_width(260.0).show(ctx, |ui| {
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| ed.properties_ui(ui));
+                });
             });
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| ed.canvas_ui(ui));
         } else {

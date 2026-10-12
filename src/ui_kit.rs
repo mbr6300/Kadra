@@ -72,6 +72,69 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
     resp
 }
 
+/// Großzügigerer, macOS-naher Grundstil: größere Schrift, mehr Luft,
+/// Schaltflächen mindestens 30 pt hoch, rundere Ecken.
+pub fn apply_style(ctx: &egui::Context) {
+    use egui::{FontFamily, Margin, TextStyle};
+    ctx.all_styles_mut(|s| {
+        s.text_styles = [
+            (TextStyle::Small, FontId::new(11.5, FontFamily::Proportional)),
+            (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
+            (TextStyle::Heading, FontId::new(19.0, FontFamily::Proportional)),
+            (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        ]
+        .into();
+        let sp = &mut s.spacing;
+        sp.item_spacing = Vec2::new(10.0, 10.0);
+        sp.button_padding = Vec2::new(14.0, 6.0);
+        sp.interact_size = Vec2::new(40.0, 30.0);
+        sp.window_margin = Margin::same(20);
+        sp.menu_margin = Margin::same(8);
+        sp.slider_width = 200.0;
+        sp.combo_width = 150.0;
+        sp.icon_width = 18.0;
+        sp.icon_width_inner = 10.0;
+        sp.icon_spacing = 8.0;
+        sp.indent = 20.0;
+        let v = &mut s.visuals;
+        v.window_corner_radius = CornerRadius::same(12);
+        v.menu_corner_radius = CornerRadius::same(10);
+        for w in [
+            &mut v.widgets.noninteractive,
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+        ] {
+            w.corner_radius = CornerRadius::same(7);
+        }
+    });
+}
+
+/// Mindestgröße für Dialog-Schaltflächen (wie macOS-Standardbuttons).
+pub const DIALOG_BUTTON: Vec2 = Vec2::new(100.0, 32.0);
+
+/// Hauptbutton in Signaturfarbe mit weißer Schrift.
+pub fn primary_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    let btn = egui::Button::new(egui::RichText::new(label).color(Color32::WHITE)).fill(ORANGE).min_size(DIALOG_BUTTON);
+    ui.add_enabled(enabled, btn)
+}
+
+/// Dialogabschluss wie unter macOS: rechtsbündig, Hauptaktion ganz rechts.
+/// Gibt (Hauptaktion, Abbrechen) zurück; Enter/Esc lösen ebenfalls aus.
+pub fn dialog_buttons(ui: &mut Ui, primary: &str, enabled: bool) -> (bool, bool) {
+    let mut out = (false, false);
+    ui.add_space(8.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let p = primary_button(ui, primary, enabled);
+        let c = ui.add(egui::Button::new("Abbrechen").min_size(DIALOG_BUTTON));
+        let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        out = (p.clicked() || (enabled && enter), c.clicked() || esc);
+    });
+    out
+}
+
 /// Senkrechte Trennlinie in der Leiste.
 pub fn bar_separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(13.0, 40.0), Sense::hover());
