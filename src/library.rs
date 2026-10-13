@@ -11,10 +11,26 @@ use crate::doc::{DocMeta, Document};
 use crate::hotkeys::Shortcut;
 use crate::render;
 
+/// Früherer App-Name; nur für die einmalige Datenübernahme.
+const LEGACY_NAME: &str = "SnapIt";
+
 pub fn data_dir() -> PathBuf {
-    let d = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("SnapIt");
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    let d = base.join("Kadra");
+    static MIGRATE: std::sync::Once = std::sync::Once::new();
+    MIGRATE.call_once(|| {
+        // Bibliothek und Einstellungen aus dem alten Ordner übernehmen (Umbenennung SnapIt → Kadra).
+        let old = base.join(LEGACY_NAME);
+        if !d.exists() && old.is_dir() {
+            let _ = fs::rename(&old, &d);
+        }
+    });
     let _ = fs::create_dir_all(d.join("library"));
     d
+}
+
+fn default_save_dir(name: &str) -> PathBuf {
+    dirs::picture_dir().unwrap_or_else(|| PathBuf::from(".")).join(name)
 }
 
 fn lib_dir() -> PathBuf {
@@ -104,7 +120,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            save_dir: dirs::picture_dir().unwrap_or_else(|| PathBuf::from(".")).join("SnapIt"),
+            save_dir: default_save_dir("Kadra"),
             format: "png".into(),
             delay_secs: 0,
             copy_after_capture: false,
@@ -121,7 +137,15 @@ impl Settings {
         data_dir().join("settings.json")
     }
     pub fn load() -> Self {
-        fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let mut s: Self =
+            fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // Alter Standard-Zielordner (~/Pictures/SnapIt) → neuer Standard (~/Pictures/Kadra);
+        // bereits gespeicherte Bilder bleiben im alten Ordner.
+        if s.save_dir == default_save_dir(LEGACY_NAME) {
+            s.save_dir = default_save_dir("Kadra");
+            s.save();
+        }
+        s
     }
     pub fn save(&self) {
         let _ = fs::write(Self::path(), serde_json::to_vec_pretty(self).unwrap());
@@ -242,9 +266,9 @@ mod tests {
 
     #[test]
     fn exports_all_formats() {
-        // SNAPIT_TEST_OUT_DIR: Dateien zur Sichtprüfung behalten
-        let keep = std::env::var_os("SNAPIT_TEST_OUT_DIR").map(PathBuf::from);
-        let dir = keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("snapit-export-{}", std::process::id())));
+        // KADRA_TEST_OUT_DIR: Dateien zur Sichtprüfung behalten
+        let keep = std::env::var_os("KADRA_TEST_OUT_DIR").map(PathBuf::from);
+        let dir = keep.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("kadra-export-{}", std::process::id())));
         let mut img = RgbaImage::from_pixel(64, 48, image::Rgba([30, 120, 230, 255]));
         img.put_pixel(0, 0, image::Rgba([0, 0, 0, 0])); // transparentes Pixel
         for (ext, _, alt) in FORMATS {

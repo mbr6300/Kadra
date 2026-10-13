@@ -4,7 +4,7 @@
 mod icon;
 
 fn main() {
-    let dir = std::env::args().nth(1).unwrap_or_else(|| "target/SnapIt.iconset".into());
+    let dir = std::env::args().nth(1).unwrap_or_else(|| "target/Kadra.iconset".into());
     std::fs::create_dir_all(&dir).unwrap();
     for base in [16, 32, 128, 256, 512] {
         icon::render(base).save_png(format!("{dir}/icon_{base}x{base}.png")).unwrap();

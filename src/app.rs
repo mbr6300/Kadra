@@ -24,7 +24,7 @@ enum Phase {
     Overlay(Box<Overlay>),
 }
 
-pub struct SnapApp {
+pub struct KadraApp {
     settings: Settings,
     items: Vec<Item>,
     editor: Option<Editor>,
@@ -53,7 +53,7 @@ pub struct SnapApp {
     /// Fenster geschlossen, App läuft nur in der Menüleiste.
     hidden: bool,
     hidden_before_capture: bool,
-    /// „SnapIt beenden“ gewählt – Schließen nicht mehr abfangen.
+    /// „Kadra beenden“ gewählt – Schließen nicht mehr abfangen.
     quitting: bool,
     show_background_hint: bool,
 }
@@ -87,7 +87,7 @@ fn install_symbol_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-impl SnapApp {
+impl KadraApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
         let (thumb_tx, thumb_rx) = channel();
@@ -133,7 +133,7 @@ impl SnapApp {
             show_background_hint: false,
         };
         app.tray = Tray::new(&cc.egui_ctx, tray_tx, &app.shortcut_texts());
-        // `snapit bild.png` öffnet eine Datei direkt im Editor.
+        // `kadra bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
             app.open_path(std::path::Path::new(&path));
         }
@@ -176,7 +176,7 @@ impl SnapApp {
         ctx.request_repaint_after(Duration::from_millis(100));
     }
 
-    /// Fenster nach der Aufnahme zurücksetzen. `show = false` lässt SnapIt im Hintergrund
+    /// Fenster nach der Aufnahme zurücksetzen. `show = false` lässt Kadra im Hintergrund
     /// (wenn die Aufnahme aus der Menüleiste kam und abgebrochen wurde).
     fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame, show: bool) {
         platform::set_overlay_level(frame, false);
@@ -193,7 +193,7 @@ impl SnapApp {
         }
     }
 
-    /// Hauptfenster zeigen und SnapIt wieder ins Dock holen.
+    /// Hauptfenster zeigen und Kadra wieder ins Dock holen.
     fn show_window(&mut self, ctx: &egui::Context) {
         self.hidden = false;
         platform::set_dock_visible(true);
@@ -201,10 +201,10 @@ impl SnapApp {
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
-    /// Fenster schließen = nur ausblenden; SnapIt läuft in der Menüleiste weiter.
+    /// Fenster schließen = nur ausblenden; Kadra läuft in der Menüleiste weiter.
     fn hide_to_background(&mut self, ctx: &egui::Context) {
         if !self.settings.background_hint_shown && self.tray.is_some() {
-            // Beim ersten Mal erklären, wo SnapIt bleibt (Dialog blendet danach aus).
+            // Beim ersten Mal erklären, wo Kadra bleibt (Dialog blendet danach aus).
             self.show_background_hint = true;
             return;
         }
@@ -218,14 +218,14 @@ impl SnapApp {
         if !self.show_background_hint {
             return;
         }
-        egui::Window::new("SnapIt läuft weiter")
+        egui::Window::new("Kadra läuft weiter")
             .collapsible(false)
             .resizable(false)
             .min_width(420.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Das Fenster wird geschlossen, SnapIt bleibt aber in der Menüleiste oben rechts aktiv.");
-                ui.label("Über das Symbol ⛶ erreichst du die Aufnahmen, öffnest SnapIt wieder oder beendest es ganz.");
+                ui.label("Das Fenster wird geschlossen, Kadra bleibt aber in der Menüleiste oben rechts aktiv.");
+                ui.label("Über das Symbol ⛶ erreichst du die Aufnahmen, öffnest Kadra wieder oder beendest es ganz.");
                 ui.weak("Globale Tastenkürzel funktionieren weiterhin.");
                 let (ok, cancel) = ui_kit::dialog_buttons(ui, "Verstanden", true);
                 if ok {
@@ -365,7 +365,7 @@ impl SnapApp {
     }
 
     fn default_name(ext: &str) -> String {
-        format!("SnapIt {}.{ext}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"))
+        format!("Kadra {}.{ext}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"))
     }
 
     fn export_to(&mut self, img: &RgbaImage, path: &std::path::Path) {
@@ -752,7 +752,7 @@ impl SnapApp {
     fn welcome(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.2);
-            ui.heading(RichText::new("SnapIt").size(40.0).strong());
+            ui.heading(RichText::new("Kadra").size(40.0).strong());
             ui.label("Bildschirmfotos aufnehmen, beschriften und teilen.");
             ui.add_space(24.0);
             for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
@@ -798,7 +798,7 @@ impl SnapApp {
             changed |= ui.checkbox(&mut self.settings.copy_after_capture, "Nach Aufnahme automatisch in Zwischenablage kopieren").changed();
             ui.separator();
             ui.label(RichText::new("Globale Tastenkürzel").strong());
-            if ui.checkbox(&mut self.settings.hotkeys, "Aktiv (funktionieren auch, wenn SnapIt im Hintergrund ist)").changed() {
+            if ui.checkbox(&mut self.settings.hotkeys, "Aktiv (funktionieren auch, wenn Kadra im Hintergrund ist)").changed() {
                 changed = true;
                 hotkeys_changed = true;
             }
@@ -941,12 +941,12 @@ impl SnapApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("SnapIt braucht die Berechtigung „Bildschirm- und Systemaudioaufnahme“.");
+                ui.label("Kadra braucht die Berechtigung „Bildschirm- und Systemaudioaufnahme“.");
                 ui.label("Ohne sie liefert macOS nur das Hintergrundbild – ohne Fenster.");
                 ui.add_space(6.0);
-                ui.label("1. Einstellungen öffnen und SnapIt aktivieren");
-                ui.label("   (steht SnapIt schon drin: mit − entfernen und neu hinzufügen)");
-                ui.label("2. SnapIt beenden und neu starten");
+                ui.label("1. Einstellungen öffnen und Kadra aktivieren");
+                ui.label("   (steht Kadra schon drin: mit − entfernen und neu hinzufügen)");
+                ui.label("2. Kadra beenden und neu starten");
                 let (preflight, titles) = platform::screen_capture_diag();
                 ui.add_space(4.0);
                 ui.weak(format!(
@@ -967,7 +967,7 @@ impl SnapApp {
                         if ui_kit::primary_button(ui, "Einstellungen öffnen", true).clicked() {
                             platform::open_privacy_settings();
                         }
-                        if ui.add(egui::Button::new("SnapIt beenden").min_size(b)).clicked() {
+                        if ui.add(egui::Button::new("Kadra beenden").min_size(b)).clicked() {
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
                         if ui.add(egui::Button::new("Schließen").min_size(b)).clicked() {
@@ -1035,9 +1035,9 @@ impl SnapApp {
     }
 }
 
-impl eframe::App for SnapApp {
+impl eframe::App for KadraApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Schließen-Knopf / ⌘W: nur ausblenden, außer „SnapIt beenden“ wurde gewählt.
+        // Schließen-Knopf / ⌘W: nur ausblenden, außer „Kadra beenden“ wurde gewählt.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.hide_to_background(ctx);

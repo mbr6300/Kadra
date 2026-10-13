@@ -1131,7 +1131,7 @@ impl Editor {
                 (Pos2::new(cr.center().x, cr.max.y - 12.0), Align2::CENTER_BOTTOM)
             };
             let (mut apply, mut cancel) = (false, false);
-            egui::Area::new(Id::new("snapit_crop_bar"))
+            egui::Area::new(Id::new("kadra_crop_bar"))
                 .order(egui::Order::Foreground)
                 .pivot(pivot)
                 .fixed_pos(anchor)
@@ -1161,7 +1161,7 @@ impl Editor {
                 let (_, th) = render::text_size(if text.is_empty() { " " } else { text }, style.font_size);
                 let anchor = to_scr(pos(*tp)) + Vec2::new(0.0, th * zoom + 10.0);
                 let focus = std::mem::take(&mut self.focus_text);
-                egui::Area::new(Id::new("snapit_text_edit"))
+                egui::Area::new(Id::new("kadra_text_edit"))
                     .fixed_pos(anchor)
                     .order(egui::Order::Foreground)
                     .show(&ctx, |ui| {

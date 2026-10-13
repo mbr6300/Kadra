@@ -52,7 +52,7 @@ impl Tray {
             capture_items.push((kind, item));
         }
         let items = [
-            (TrayAction::Show, "SnapIt öffnen"),
+            (TrayAction::Show, "Kadra öffnen"),
             (TrayAction::CopyLast, "Letzte Aufnahme kopieren"),
             (TrayAction::Settings, "Einstellungen …"),
         ];
@@ -61,12 +61,12 @@ impl Tray {
             menu.append(&MenuItem::with_id(action.id(), text, true, None)).ok()?;
         }
         menu.append(&PredefinedMenuItem::separator()).ok()?;
-        menu.append(&MenuItem::with_id(TrayAction::Quit.id(), "SnapIt beenden", true, None)).ok()?;
+        menu.append(&MenuItem::with_id(TrayAction::Quit.id(), "Kadra beenden", true, None)).ok()?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon_templated(template_icon())
-            .with_tooltip("SnapIt")
+            .with_tooltip("Kadra")
             .build()
             .ok()?;
 

@@ -2,7 +2,7 @@
 
 use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
-/// SnapIt-Signaturfarbe als Fläche (weiße Schrift darauf ≈ 4,8 : 1 Kontrast).
+/// Kadra-Signaturfarbe als Fläche (weiße Schrift darauf ≈ 4,8 : 1 Kontrast).
 pub const ORANGE: Color32 = Color32::from_rgb(186, 82, 40);
 pub const ORANGE_HOVER: Color32 = Color32::from_rgb(200, 92, 48);
 /// Hellere Variante für orange Linien/Symbole auf dunklem Grund.
@@ -28,7 +28,7 @@ pub enum Look {
 pub const COMPACT_WIDTH: f32 = 40.0;
 
 fn compact_id() -> egui::Id {
-    egui::Id::new("snapit_bar_compact")
+    egui::Id::new("kadra_bar_compact")
 }
 
 /// Leisten-Buttons ab jetzt nur als Symbol (Beschriftung als Tooltip) zeichnen.

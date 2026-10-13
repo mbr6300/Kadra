@@ -1,4 +1,4 @@
-//! SnapIt – Screenshot-Werkzeug für macOS: aufnehmen, beschriften, exportieren.
+//! Kadra – Screenshot-Werkzeug für macOS: aufnehmen, beschriften, exportieren.
 
 mod app;
 mod capture;
@@ -19,13 +19,13 @@ fn main() -> eframe::Result {
     let app_icon = egui::IconData { rgba: icon::rgba(size), width: size, height: size };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SnapIt")
-            .with_app_id("ch.snapit.app")
+            .with_title("Kadra")
+            .with_app_id("ch.kadra.app")
             .with_icon(std::sync::Arc::new(app_icon))
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([560.0, 420.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native("SnapIt", options, Box::new(|cc| Ok(Box::new(app::SnapApp::new(cc)))))
+    eframe::run_native("Kadra", options, Box::new(|cc| Ok(Box::new(app::KadraApp::new(cc)))))
 }

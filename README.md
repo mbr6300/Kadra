@@ -1,4 +1,4 @@
-# SnapIt
+# Kadra
 
 Screenshot-Werkzeug für macOS: Bildschirmfotos aufnehmen, beschriften und exportieren.
 Geschrieben in Rust (eframe/egui, xcap, tiny-skia).
@@ -9,24 +9,24 @@ Ausführliche Beschreibung aller Funktionen, Architektur und möglicher Erweiter
 ## Starten
 
 ```bash
-./bundle.sh                 # baut target/SnapIt.app
-open target/SnapIt.app
+./bundle.sh                 # baut target/Kadra.app
+open target/Kadra.app
 ```
 
 Installierbares DMG (App + Verknüpfung „Programme“ zum Hineinziehen):
 
 ```bash
-./make_dmg.sh               # erzeugt target/SnapIt-<version>.dmg
+./make_dmg.sh               # erzeugt target/Kadra-<version>.dmg
 ```
 
 Ist das Ziel `x86_64-apple-darwin` installiert (`rustup target add x86_64-apple-darwin`),
 entsteht automatisch eine Universal-App für Apple Silicon und Intel.
-Signiert wird mit der ersten Codesigning-Identität im Schlüsselbund (oder `SNAPIT_SIGN_IDENTITY`).
+Signiert wird mit der ersten Codesigning-Identität im Schlüsselbund (oder `KADRA_SIGN_IDENTITY`).
 Für die Weitergabe an andere Macs ohne Gatekeeper-Warnung braucht es eine
 „Developer ID Application“-Identität und Notarisierung (`xcrun notarytool`).
 
 Beim ersten Aufnehmen fragt macOS nach der Berechtigung **Bildschirmaufnahme**
-(Systemeinstellungen → Datenschutz & Sicherheit). Danach SnapIt neu starten.
+(Systemeinstellungen → Datenschutz & Sicherheit). Danach Kadra neu starten.
 Für die Entwicklung geht auch `cargo run --release [bild.png]`.
 
 ## Aufnahme
@@ -55,11 +55,11 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sp
 
 ## Ausgabe & Bibliothek
 
-- Kopieren (⌘C), Schnellspeichern (⌘S) in `~/Pictures/SnapIt`, Speichern unter (⌘⇧S), „Exportieren als ▸“
+- Kopieren (⌘C), Schnellspeichern (⌘S) in `~/Pictures/Kadra`, Speichern unter (⌘⇧S), „Exportieren als ▸“
 - Formate: PNG, JPEG, TIFF, WebP, GIF, BMP, PDF – Schnellspeicher-Format und JPEG-/PDF-Qualität in den Einstellungen
 - Formate ohne Transparenz (JPEG, BMP, PDF) bekommen weißen Hintergrund
 - Jede Aufnahme landet automatisch in der Bibliothek (Leiste unten) und bleibt dort editierbar:
-  `~/Library/Application Support/SnapIt/library/` (Original-PNG + Anmerkungen als JSON)
+  `~/Library/Application Support/Kadra/library/` (Original-PNG + Anmerkungen als JSON)
 
 ## Aufbau
 
@@ -75,7 +75,7 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sp
 
 ## Lizenz
 
-SnapIt ist freie Software unter der **GNU General Public License v3.0 oder neuer**
+Kadra ist freie Software unter der **GNU General Public License v3.0 oder neuer**
 (`GPL-3.0-or-later`), siehe [LICENSE](LICENSE). Du darfst das Programm nutzen, verändern und
 weitergeben; veränderte Versionen müssen ebenfalls unter der GPL mit Quellcode verbreitet werden.
 Verwendete Bibliotheken stehen unter MIT- bzw. Apache-2.0-Lizenzen (GPL-3.0-kompatibel).

@@ -1,6 +1,6 @@
-# SnapIt – Dokumentation
+# Kadra – Dokumentation
 
-SnapIt ist ein Screenshot-Werkzeug für macOS.
+Kadra ist ein Screenshot-Werkzeug für macOS.
 Es nimmt Bildschirmbereiche, Fenster oder ganze Bildschirme auf, bietet einen Editor zum
 Beschriften und Nachbearbeiten und gibt das Ergebnis als Datei oder über die Zwischenablage aus.
 Geschrieben in Rust (eframe/egui), läuft als native App mit Menüleisten-Symbol.
@@ -11,14 +11,19 @@ Geschrieben in Rust (eframe/egui), läuft als native App mit Menüleisten-Symbol
 
 | Weg | Vorgehen |
 |---|---|
-| DMG (Release) | DMG öffnen, **SnapIt** auf **Programme** ziehen. Da die App nicht notarisiert ist: beim ersten Start im Finder *Rechtsklick → Öffnen*. |
-| Aus dem Quellcode | `./bundle.sh` baut `target/SnapIt.app`, `./make_dmg.sh` zusätzlich das DMG. |
+| DMG (Release) | DMG öffnen, **Kadra** auf **Programme** ziehen. Da die App nicht notarisiert ist: beim ersten Start im Finder *Rechtsklick → Öffnen*. |
+| Aus dem Quellcode | `./bundle.sh` baut `target/Kadra.app`, `./make_dmg.sh` zusätzlich das DMG. |
 
 Beim ersten Aufnehmen fragt macOS nach **Bildschirm- und Systemaudioaufnahme**
-(Systemeinstellungen → Datenschutz & Sicherheit). Danach SnapIt neu starten.
-Fehlt die Berechtigung, zeigt SnapIt einen Hinweis mit Direktlink zu den Einstellungen.
+(Systemeinstellungen → Datenschutz & Sicherheit). Danach Kadra neu starten.
+Fehlt die Berechtigung, zeigt Kadra einen Hinweis mit Direktlink zu den Einstellungen.
 
 Voraussetzungen: macOS 12+, Apple Silicon (Universal-Build möglich, siehe Abschnitt 6).
+
+**Umstieg von früheren Versionen (bis 0.8.2 unter dem Namen „SnapIt“):** Bibliothek und
+Einstellungen werden beim ersten Start automatisch übernommen. Die Berechtigung für
+Bildschirmaufnahme muss für Kadra einmal neu erteilt werden; die alte App kann gelöscht und ihr
+Eintrag in der Berechtigungsliste entfernt werden.
 
 ---
 
@@ -75,7 +80,7 @@ Löschen (⌫), Zoom (⌘ + Scrollen / Pinch, „Einpassen“, „100 %“), Ver
 | Aktion | Kürzel | Beschreibung |
 |---|---|---|
 | Kopieren | ⌘C | Fertiges Bild in die Zwischenablage |
-| Schnell speichern | ⌘S | Ohne Dialog in den Zielordner (Standard `~/Pictures/SnapIt`) |
+| Schnell speichern | ⌘S | Ohne Dialog in den Zielordner (Standard `~/Pictures/Kadra`) |
 | Speichern unter … | ⌘⇧S | Dialog mit allen Formaten |
 | Exportieren als ▸ | – | Format gezielt wählen |
 
@@ -86,21 +91,21 @@ Qualitätsregler und geschätzter Dateigröße. Formate ohne Transparenz erhalte
 
 Jede Aufnahme wird automatisch gespeichert und erscheint in der Leiste unten.
 Gespeichert werden Originalbild, Anmerkungen (JSON) und Vorschaubild – Aufnahmen bleiben also
-jederzeit weiter bearbeitbar. Ort: `~/Library/Application Support/SnapIt/library/`.
+jederzeit weiter bearbeitbar. Ort: `~/Library/Application Support/Kadra/library/`.
 Rechtsklick auf ein Vorschaubild: Öffnen oder Löschen.
 
 ### 2.5 Menüleiste und Hintergrundbetrieb
 
-- **Fenster schließen** blendet SnapIt aus; die App läuft mit Symbol in der Menüleiste weiter
+- **Fenster schließen** blendet Kadra aus; die App läuft mit Symbol in der Menüleiste weiter
   (kein Dock-Symbol). Globale Kürzel funktionieren weiterhin.
-- Menü des Symbols: Aufnahmemodi, SnapIt öffnen, Letzte Aufnahme kopieren, Einstellungen, **SnapIt beenden**.
-- Abgebrochene Aufnahmen aus dem Hintergrund lassen SnapIt im Hintergrund; fertige öffnen den Editor.
+- Menü des Symbols: Aufnahmemodi, Kadra öffnen, Letzte Aufnahme kopieren, Einstellungen, **Kadra beenden**.
+- Abgebrochene Aufnahmen aus dem Hintergrund lassen Kadra im Hintergrund; fertige öffnen den Editor.
 
 ### 2.6 Einstellungen
 
 Zielordner, Format fürs Schnellspeichern, JPEG-/PDF-Qualität, automatisches Kopieren nach der
 Aufnahme, globale Kürzel ein/aus und **frei belegbar** (Kombination per Tastendruck aufnehmen,
-Konflikterkennung). Gespeichert in `~/Library/Application Support/SnapIt/settings.json`.
+Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings.json`.
 
 ---
 

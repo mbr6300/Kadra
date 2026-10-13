@@ -1,4 +1,4 @@
-//! App-Icon: abgerundetes Quadrat in SnapIt-Orange mit weißem Sucher (Ecken) und Auslöser-Punkt.
+//! App-Icon: abgerundetes Quadrat in Kadra-Orange mit weißem Sucher (Ecken) und Auslöser-Punkt.
 //! Wird für das Dock zur Laufzeit und für das Iconset im App-Paket (examples/make_icon.rs) genutzt.
 
 use tiny_skia::{

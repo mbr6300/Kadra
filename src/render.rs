@@ -454,7 +454,7 @@ mod tests {
             Shape::Ellipse { a: [420.0, 20.0], b: [580.0, 120.0] },
             Shape::Pen { pts: vec![[20.0, 200.0], [60.0, 160.0], [100.0, 220.0]] },
             Shape::Highlight { a: [120.0, 150.0], b: [300.0, 190.0] },
-            Shape::Text { pos: [120.0, 200.0], text: "Hallo SnapIt\nZeile 2".into() },
+            Shape::Text { pos: [120.0, 200.0], text: "Hallo Kadra\nZeile 2".into() },
             Shape::Step { pos: [400.0, 200.0], n: 7 },
             Shape::Blur { a: [20.0, 280.0], b: [200.0, 380.0] },
             Shape::Pixelate { a: [220.0, 280.0], b: [400.0, 380.0] },
@@ -464,7 +464,7 @@ mod tests {
         doc.effects = Effects { border: Some((6.0, [30, 30, 30, 255])), drop_shadow: true, round_corners: 12.0 };
         let out = render(&doc);
         assert!(out.width() > 600 && out.height() > 400);
-        if let Ok(p) = std::env::var("SNAPIT_TEST_OUT") {
+        if let Ok(p) = std::env::var("KADRA_TEST_OUT") {
             out.save(p).unwrap();
         }
     }
