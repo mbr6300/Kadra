@@ -71,3 +71,10 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sp
 | `src/render.rs` | Export-Rendering (tiny-skia, ab_glyph) |
 | `src/library.rs` | Bibliothek, Einstellungen, Export |
 | `src/platform.rs` | macOS-Spezifika (Fensterebene, Mausposition) |
+
+## Lizenz
+
+SnapIt ist freie Software unter der **GNU General Public License v3.0 oder neuer**
+(`GPL-3.0-or-later`), siehe [LICENSE](LICENSE). Du darfst das Programm nutzen, verändern und
+weitergeben; veränderte Versionen müssen ebenfalls unter der GPL mit Quellcode verbreitet werden.
+Verwendete Bibliotheken stehen unter MIT- bzw. Apache-2.0-Lizenzen (GPL-3.0-kompatibel).
