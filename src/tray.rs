@@ -1,40 +1,12 @@
 //! Symbol in der Menüleiste (oben rechts) mit Schnellauswahl.
 
-use std::sync::mpsc::Sender;
-
 use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::capture::CaptureKind;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrayAction {
-    Capture(CaptureKind),
-    Show,
-    CopyLast,
-    Settings,
-    Quit,
-}
-
-impl TrayAction {
-    fn id(self) -> String {
-        match self {
-            TrayAction::Capture(k) => format!("capture-{}", k as u8),
-            TrayAction::Show => "show".into(),
-            TrayAction::CopyLast => "copy".into(),
-            TrayAction::Settings => "settings".into(),
-            TrayAction::Quit => "quit".into(),
-        }
-    }
-
-    fn from_id(id: &str) -> Option<Self> {
-        let all = CaptureKind::ALL.map(TrayAction::Capture);
-        all.into_iter()
-            .chain([TrayAction::Show, TrayAction::CopyLast, TrayAction::Settings, TrayAction::Quit])
-            .find(|a| a.id() == id)
-    }
-}
+use crate::hotkeys::Shortcut;
+use crate::menu::{capture_label, item, shortcut_accel, Action};
 
 pub struct Tray {
     _icon: TrayIcon,
@@ -43,25 +15,21 @@ pub struct Tray {
 
 impl Tray {
     /// Muss auf dem Hauptthread nach dem Start der Ereignisschleife erzeugt werden.
-    pub fn new(ctx: &egui::Context, tx: Sender<TrayAction>, shortcuts: &[Option<String>; 4]) -> Option<Self> {
+    /// Klicks laufen über den gemeinsamen Handler aus `menu::install_handler`.
+    pub fn new(shortcuts: &[Option<Shortcut>; 4]) -> Option<Self> {
         let menu = Menu::new();
         let mut capture_items = vec![];
         for (kind, sc) in CaptureKind::ALL.into_iter().zip(shortcuts) {
-            let item = MenuItem::with_id(TrayAction::Capture(kind).id(), capture_label(kind, sc.as_deref()), true, None);
-            menu.append(&item).ok()?;
-            capture_items.push((kind, item));
-        }
-        let items = [
-            (TrayAction::Show, "Kadra öffnen"),
-            (TrayAction::CopyLast, "Letzte Aufnahme kopieren"),
-            (TrayAction::Settings, "Einstellungen …"),
-        ];
-        menu.append(&PredefinedMenuItem::separator()).ok()?;
-        for (action, text) in items {
-            menu.append(&MenuItem::with_id(action.id(), text, true, None)).ok()?;
+            let it = MenuItem::with_id(Action::Capture(kind).id(), capture_label(kind), true, shortcut_accel(sc.as_ref()));
+            menu.append(&it).ok()?;
+            capture_items.push((kind, it));
         }
         menu.append(&PredefinedMenuItem::separator()).ok()?;
-        menu.append(&MenuItem::with_id(TrayAction::Quit.id(), "Kadra beenden", true, None)).ok()?;
+        menu.append(&item(Action::Show, "Kadra öffnen", None)).ok()?;
+        menu.append(&item(Action::CopyLast, "Letzte Aufnahme kopieren", None)).ok()?;
+        menu.append(&item(Action::Settings, "Einstellungen …", None)).ok()?;
+        menu.append(&PredefinedMenuItem::separator()).ok()?;
+        menu.append(&item(Action::Quit, "Kadra beenden", None)).ok()?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -69,29 +37,14 @@ impl Tray {
             .with_tooltip("Kadra")
             .build()
             .ok()?;
-
-        let ctx = ctx.clone();
-        MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-            if let Some(action) = TrayAction::from_id(e.id.as_ref()) {
-                let _ = tx.send(action);
-                ctx.request_repaint();
-            }
-        }));
         Some(Self { _icon: icon, capture_items })
     }
 
     /// Kürzel im Menü aktualisieren (nach Änderung in den Einstellungen).
-    pub fn set_shortcuts(&self, shortcuts: &[Option<String>; 4]) {
-        for ((kind, item), sc) in self.capture_items.iter().zip(shortcuts) {
-            item.set_text(capture_label(*kind, sc.as_deref()));
+    pub fn set_shortcuts(&self, shortcuts: &[Option<Shortcut>; 4]) {
+        for ((_, it), sc) in self.capture_items.iter().zip(shortcuts) {
+            let _ = it.set_accelerator(shortcut_accel(sc.as_ref()));
         }
-    }
-}
-
-fn capture_label(kind: CaptureKind, shortcut: Option<&str>) -> String {
-    match shortcut {
-        Some(sc) => format!("{} aufnehmen   {sc}", kind.label()),
-        None => format!("{} aufnehmen", kind.label()),
     }
 }
 

@@ -387,6 +387,38 @@ impl Editor {
         !self.redo.is_empty()
     }
 
+    pub fn duplicate_selected(&mut self) {
+        if let Some(i) = self.selected.filter(|i| *i < self.doc.annotations.len()) {
+            self.push_undo();
+            let mut a = self.doc.annotations[i].clone();
+            a.shape.translate(Vec2::splat(20.0));
+            self.doc.annotations.push(a);
+            self.selected = Some(self.doc.annotations.len() - 1);
+        }
+    }
+
+    // ---------- Ansicht ----------
+
+    /// Bild ins Fenster einpassen.
+    pub fn zoom_fit(&mut self) {
+        self.fit = true;
+    }
+
+    /// 1 Bildpixel = 1 Bildschirmpixel.
+    pub fn zoom_actual(&mut self, pixels_per_point: f32) {
+        self.fit = false;
+        self.zoom = 1.0 / pixels_per_point;
+        self.pan = Vec2::ZERO;
+    }
+
+    /// Um die Fenstermitte zoomen.
+    pub fn zoom_by(&mut self, factor: f32) {
+        let new = (self.zoom * factor).clamp(0.02, 32.0);
+        self.pan *= new / self.zoom;
+        self.zoom = new;
+        self.fit = false;
+    }
+
     pub fn delete_selected(&mut self) {
         if let Some(i) = self.selected.take() {
             if i < self.doc.annotations.len() {
@@ -718,13 +750,7 @@ impl Editor {
                 self.redo();
             }
             if ctx.input(|i| i.key_pressed(Key::D)) {
-                if let Some(i) = self.selected {
-                    self.push_undo();
-                    let mut a = self.doc.annotations[i].clone();
-                    a.shape.translate(Vec2::splat(20.0));
-                    self.doc.annotations.push(a);
-                    self.selected = Some(self.doc.annotations.len() - 1);
-                }
+                self.duplicate_selected();
             }
             return;
         }

@@ -104,7 +104,24 @@ Rechtsklick auf ein Vorschaubild: Öffnen oder Löschen.
 - Menü des Symbols: Aufnahmemodi, Kadra öffnen, Letzte Aufnahme kopieren, Einstellungen, **Kadra beenden**.
 - Abgebrochene Aufnahmen aus dem Hintergrund lassen Kadra im Hintergrund; fertige öffnen den Editor.
 
-### 2.6 Einstellungen
+### 2.6 Menüs (macOS-Menüleiste)
+
+Ist Kadra aktiv, stehen oben in der Menüleiste die üblichen macOS-Menüs bereit:
+
+| Menü | Inhalt |
+|---|---|
+| **Kadra** | Über Kadra (Version, Lizenz, Quellcode, verwendete Bibliotheken), Einstellungen ⌘,, Dienste, Ausblenden ⌘H, Kadra beenden ⌘Q |
+| **Ablage** | Neue Aufnahme ▸ (alle Modi mit Kürzel), Öffnen ⌘O, Schnell speichern ⌘S, Speichern unter ⇧⌘S, Exportieren als ▸, Zielordner zeigen, Fenster schließen ⌘W |
+| **Bearbeiten** | Rückgängig ⌘Z, Wiederholen ⇧⌘Z, Ausschneiden/Kopieren/Einfügen/Alles auswählen (in Textfeldern für Text, sonst für das Bild), Duplizieren ⌘D, Objekt löschen, Auswahl aufheben |
+| **Bild** | Drehen, Spiegeln, Zuschneiden |
+| **Werkzeuge** | Alle Editor-Werkzeuge (Taste in Klammern) |
+| **Darstellung** | Einpassen ⌘0, Originalgröße ⌘1, Vergrößern ⌘=, Verkleinern ⌘− |
+| **Fenster** | Im Dock ablegen ⌘M, Zoomen, Alle nach vorne bringen |
+| **Hilfe** | Dokumentation, Tastenkürzel, Kadra auf GitHub, Problem melden |
+
+⌘V fügt jetzt auch reine Bilder aus der Zwischenablage ein.
+
+### 2.7 Einstellungen
 
 Zielordner, Format fürs Schnellspeichern, JPEG-/PDF-Qualität, automatisches Kopieren nach der
 Aufnahme, globale Kürzel ein/aus und **frei belegbar** (Kombination per Tastendruck aufnehmen,
@@ -164,7 +181,6 @@ JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste.
 - Release-DMG nur für Apple Silicon und nicht notarisiert (Gatekeeper-Warnung beim ersten Start).
 - Minimierte Fenster liefert macOS meist nicht als Bild.
 - Auswahl-Overlay jeweils auf dem Bildschirm unter dem Mauszeiger.
-- ⌘V fügt ein reines Bild aus der Zwischenablage nicht ein (egui liefert nur Text) – Button „Einfügen“ nutzen.
 - Füllkanten sind nicht geglättet; WebP wird verlustfrei gespeichert.
 
 ---

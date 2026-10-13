@@ -15,7 +15,8 @@ use crate::library::{self, Item, Settings};
 use crate::overlay::{Overlay, OverlayResult};
 use crate::platform;
 use crate::render;
-use crate::tray::{Tray, TrayAction};
+use crate::menu::{self, Action, AppMenu};
+use crate::tray::Tray;
 
 enum Phase {
     Normal,
@@ -50,7 +51,10 @@ pub struct KadraApp {
     estimate_rx: Receiver<(u8, usize)>,
     /// Symbol in der Menüleiste (muss am Leben bleiben).
     tray: Option<Tray>,
-    tray_rx: Receiver<TrayAction>,
+    /// macOS-Menüleiste (muss am Leben bleiben).
+    app_menu: Option<AppMenu>,
+    /// Aktionen aus Menüleiste und Menüleisten-Symbol.
+    menu_rx: Receiver<Action>,
     /// Fenster geschlossen, App läuft nur in der Menüleiste.
     hidden: bool,
     hidden_before_capture: bool,
@@ -111,7 +115,7 @@ impl KadraApp {
         let (thumb_tx, thumb_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
         let (estimate_tx, estimate_rx) = channel();
-        let (tray_tx, tray_rx) = channel();
+        let (menu_tx, menu_rx) = channel();
 
         install_symbol_font(&cc.egui_ctx);
         let mut hotkeys = Hotkeys::new(&cc.egui_ctx, hk_tx);
@@ -144,13 +148,17 @@ impl KadraApp {
             estimate_tx,
             estimate_rx,
             tray: None,
-            tray_rx,
+            app_menu: None,
+            menu_rx,
             hidden: false,
             hidden_before_capture: false,
             quitting: false,
             show_background_hint: false,
         };
-        app.tray = Tray::new(&cc.egui_ctx, tray_tx, &app.shortcut_texts());
+        menu::install_handler(&cc.egui_ctx, menu_tx);
+        let shortcuts = app.active_shortcuts();
+        app.tray = Tray::new(&shortcuts);
+        app.app_menu = AppMenu::new(&shortcuts, menu::about_icon());
         // `kadra bild.png` öffnet eine Datei direkt im Editor.
         if let Some(path) = std::env::args_os().nth(1) {
             app.open_path(std::path::Path::new(&path));
@@ -257,12 +265,18 @@ impl KadraApp {
             });
     }
 
-    fn handle_tray(&mut self, ctx: &egui::Context) {
-        while let Ok(action) = self.tray_rx.try_recv() {
+    /// Aktionen aus Menüleiste und Menüleisten-Symbol ausführen.
+    fn handle_menu_actions(&mut self, ctx: &egui::Context) {
+        while let Ok(action) = self.menu_rx.try_recv() {
+            // Menü-Kürzel fangen die Taste ab, bevor egui sie sieht – in Textfeldern
+            // die Bearbeitungsbefehle daher als egui-Ereignis an das Textfeld weitergeben.
+            if ctx.wants_keyboard_input() && forward_to_text_field(ctx, action) {
+                continue;
+            }
             match action {
-                TrayAction::Capture(kind) => self.start_capture(ctx, kind),
-                TrayAction::Show => self.show_window(ctx),
-                TrayAction::CopyLast => {
+                Action::Capture(kind) => self.start_capture(ctx, kind),
+                Action::Show => self.show_window(ctx),
+                Action::CopyLast => {
                     if self.editor.is_none() {
                         if let Some(id) = self.items.first().map(|i| i.id.clone()) {
                             self.open_item(&id);
@@ -270,15 +284,56 @@ impl KadraApp {
                     }
                     self.copy();
                 }
-                TrayAction::Settings => {
+                Action::Settings => {
                     self.show_settings = true;
                     self.show_window(ctx);
                 }
-                TrayAction::Quit => {
+                Action::HideWindow => self.hide_to_background(ctx),
+                Action::Quit => {
                     self.quitting = true;
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
+                Action::Open => self.open_file(),
+                Action::QuickSave => self.quick_save(),
+                Action::SaveAs => self.save_as(None),
+                Action::Export(ext) => self.save_as(Some(ext)),
+                Action::RevealFolder => {
+                    let _ = std::fs::create_dir_all(&self.settings.save_dir);
+                    open_url(&self.settings.save_dir.to_string_lossy());
+                }
+                Action::Copy => self.copy(),
+                Action::Paste => self.paste(),
+                Action::Cut | Action::SelectAll => {}
+                Action::Docs => open_url(&format!("{}/blob/master/docs/DOKUMENTATION.md", menu::REPO_URL)),
+                Action::Website => open_url(menu::REPO_URL),
+                Action::Issues => open_url(&format!("{}/issues", menu::REPO_URL)),
+                _ => {
+                    let ppp = ctx.pixels_per_point();
+                    if let Some(ed) = &mut self.editor {
+                        match action {
+                            Action::Undo => ed.undo(),
+                            Action::Redo => ed.redo(),
+                            Action::Duplicate => ed.duplicate_selected(),
+                            Action::Delete => ed.delete_selected(),
+                            Action::Deselect => ed.selected = None,
+                            Action::RotateLeft => ed.rotate(false),
+                            Action::RotateRight => ed.rotate(true),
+                            Action::FlipH => ed.flip(true),
+                            Action::FlipV => ed.flip(false),
+                            Action::Tool(t) => ed.set_tool(t),
+                            Action::ZoomFit => ed.zoom_fit(),
+                            Action::ZoomActual => ed.zoom_actual(ppp),
+                            Action::ZoomIn => ed.zoom_by(1.25),
+                            Action::ZoomOut => ed.zoom_by(0.8),
+                            _ => {}
+                        }
+                    }
+                }
             }
+        }
+        if let Some(m) = &mut self.app_menu {
+            let (u, r) = self.editor.as_ref().map(|e| (e.can_undo(), e.can_redo())).unwrap_or_default();
+            m.update(self.editor.is_some(), u, r);
         }
     }
 
@@ -819,105 +874,120 @@ impl KadraApp {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_settings;
+        if !self.show_settings {
+            return;
+        }
+        let mut open = true;
         let mut changed = false;
         let mut hotkeys_changed = false;
-        egui::Window::new("Einstellungen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Zielordner:");
-                ui.monospace(self.settings.save_dir.display().to_string());
-                if ui.button("Ändern…").clicked() {
-                    if let Some(d) = rfd::FileDialog::new().set_directory(&self.settings.save_dir).pick_folder() {
-                        self.settings.save_dir = d;
-                        changed = true;
-                    }
+        // Eigene Kopfzeile statt egui-Titelleiste: größerer, sauber platzierter Schließen-Knopf.
+        egui::Window::new("Einstellungen")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if ui_kit::window_header(ui, "Einstellungen") {
+                    open = false;
                 }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Format (Schnellspeichern):");
-                egui::ComboBox::from_id_salt("format")
-                    .selected_text(library::format_name(&self.settings.format))
-                    .show_ui(ui, |ui| {
-                        for (ext, name, _) in library::FORMATS {
-                            changed |= ui.selectable_value(&mut self.settings.format, ext.to_string(), name).changed();
+                ui.horizontal(|ui| {
+                    ui.label("Zielordner:");
+                    ui.monospace(self.settings.save_dir.display().to_string());
+                    if ui.button("Ändern…").clicked() {
+                        if let Some(d) = rfd::FileDialog::new().set_directory(&self.settings.save_dir).pick_folder() {
+                            self.settings.save_dir = d;
+                            changed = true;
                         }
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.label("JPEG-/PDF-Qualität:");
-                changed |= ui.add(egui::Slider::new(&mut self.settings.jpeg_quality, 50..=100).suffix(" %")).changed();
-            });
-            changed |= ui.checkbox(&mut self.settings.copy_after_capture, "Nach Aufnahme automatisch in Zwischenablage kopieren").changed();
-            ui.separator();
-            ui.label(RichText::new("Globale Tastenkürzel").strong());
-            if ui.checkbox(&mut self.settings.hotkeys, "Aktiv (funktionieren auch, wenn Kadra im Hintergrund ist)").changed() {
-                changed = true;
-                hotkeys_changed = true;
-            }
-            ui.add_enabled_ui(self.settings.hotkeys, |ui| {
-                egui::Grid::new("shortcuts").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
-                    for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
-                        ui.label(kind.label());
-                        ui.horizontal(|ui| {
-                            if self.recording == Some(i) {
-                                ui.colored_label(Color32::from_rgb(255, 150, 60), "Tastenkombination drücken …");
-                            } else if let Some(sc) = &self.settings.shortcuts[i] {
-                                hotkeys::caps_ui(ui, sc);
-                                if self.hotkey_failed.contains(&kind) {
-                                    ui.colored_label(Color32::from_rgb(220, 120, 0), "⚠")
-                                        .on_hover_text("Konnte nicht registriert werden – evtl. von einer anderen App belegt.");
-                                }
-                            } else {
-                                ui.weak("– keins –");
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            if self.recording == Some(i) {
-                                if ui.button("Abbrechen").clicked() {
-                                    self.recording = None;
-                                    hotkeys_changed = true;
-                                }
-                            } else {
-                                if ui.button("Ändern").clicked() {
-                                    self.recording = Some(i);
-                                    self.recording_hint = None;
-                                    // Während der Aufnahme dürfen bestehende Kürzel nicht auslösen.
-                                    if let Some(h) = &mut self.hotkeys {
-                                        h.suspend();
-                                    }
-                                }
-                                if self.settings.shortcuts[i].is_some() && ui.button("Entfernen").clicked() {
-                                    self.settings.shortcuts[i] = None;
-                                    changed = true;
-                                    hotkeys_changed = true;
-                                }
-                            }
-                        });
-                        ui.end_row();
                     }
                 });
-                if let Some(hint) = &self.recording_hint {
-                    ui.colored_label(Color32::from_rgb(220, 120, 0), hint);
-                } else if self.recording.is_some() {
-                    ui.weak("Mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren (z. B. ⌃ + ⇧ + 1). Esc bricht ab.");
-                }
-                if ui.button("Standard wiederherstellen").clicked() {
-                    self.settings.shortcuts = Shortcut::defaults();
-                    self.recording = None;
+                ui.horizontal(|ui| {
+                    ui.label("Format (Schnellspeichern):");
+                    egui::ComboBox::from_id_salt("format")
+                        .selected_text(library::format_name(&self.settings.format))
+                        .show_ui(ui, |ui| {
+                            for (ext, name, _) in library::FORMATS {
+                                changed |= ui.selectable_value(&mut self.settings.format, ext.to_string(), name).changed();
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("JPEG-/PDF-Qualität:");
+                    changed |= ui.add(egui::Slider::new(&mut self.settings.jpeg_quality, 50..=100).suffix(" %")).changed();
+                });
+                changed |= ui.checkbox(&mut self.settings.copy_after_capture, "Nach Aufnahme automatisch in Zwischenablage kopieren").changed();
+                ui.separator();
+                ui.label(RichText::new("Globale Tastenkürzel").strong());
+                if ui.checkbox(&mut self.settings.hotkeys, "Aktiv (funktionieren auch, wenn Kadra im Hintergrund ist)").changed() {
                     changed = true;
                     hotkeys_changed = true;
                 }
+                ui.add_enabled_ui(self.settings.hotkeys, |ui| {
+                    egui::Grid::new("shortcuts").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
+                        for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
+                            ui.label(kind.label());
+                            ui.horizontal(|ui| {
+                                if self.recording == Some(i) {
+                                    ui.colored_label(Color32::from_rgb(255, 150, 60), "Tastenkombination drücken …");
+                                } else if let Some(sc) = &self.settings.shortcuts[i] {
+                                    hotkeys::caps_ui(ui, sc);
+                                    if self.hotkey_failed.contains(&kind) {
+                                        ui.colored_label(Color32::from_rgb(220, 120, 0), "⚠")
+                                            .on_hover_text("Konnte nicht registriert werden – evtl. von einer anderen App belegt.");
+                                    }
+                                } else {
+                                    ui.weak("– keins –");
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if self.recording == Some(i) {
+                                    if ui.button("Abbrechen").clicked() {
+                                        self.recording = None;
+                                        hotkeys_changed = true;
+                                    }
+                                } else {
+                                    if ui.button("Ändern").clicked() {
+                                        self.recording = Some(i);
+                                        self.recording_hint = None;
+                                        // Während der Aufnahme dürfen bestehende Kürzel nicht auslösen.
+                                        if let Some(h) = &mut self.hotkeys {
+                                            h.suspend();
+                                        }
+                                    }
+                                    if self.settings.shortcuts[i].is_some() && ui.button("Entfernen").clicked() {
+                                        self.settings.shortcuts[i] = None;
+                                        changed = true;
+                                        hotkeys_changed = true;
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+                    if let Some(hint) = &self.recording_hint {
+                        ui.colored_label(Color32::from_rgb(220, 120, 0), hint);
+                    } else if self.recording.is_some() {
+                        ui.weak("Mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren (z. B. ⌃ + ⇧ + 1). Esc bricht ab.");
+                    }
+                    if ui.button("Standard wiederherstellen").clicked() {
+                        self.settings.shortcuts = Shortcut::defaults();
+                        self.recording = None;
+                        changed = true;
+                        hotkeys_changed = true;
+                    }
+                });
+                if self.hotkeys.is_none() {
+                    ui.colored_label(Color32::from_rgb(220, 120, 0), "Globale Kürzel werden auf diesem System nicht unterstützt.");
+                }
+                ui.separator();
+                ui.label(RichText::new("Editor").strong());
+                ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · F Füllen · C Zuschneiden");
+                ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
+                ui.separator();
+                ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
             });
-            if self.hotkeys.is_none() {
-                ui.colored_label(Color32::from_rgb(220, 120, 0), "Globale Kürzel werden auf diesem System nicht unterstützt.");
-            }
-            ui.separator();
-            ui.label(RichText::new("Editor").strong());
-            ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · F Füllen · C Zuschneiden");
-            ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
-            ui.separator();
-            ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
-        });
+        // Esc schließt (während einer Kürzel-Aufnahme bricht Esc stattdessen nur diese ab)
+        if self.recording.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
         if !open && self.recording.take().is_some() {
             hotkeys_changed = true;
         }
@@ -934,17 +1004,18 @@ impl KadraApp {
         if let Some(h) = &mut self.hotkeys {
             self.hotkey_failed = h.apply(&self.settings.shortcuts, self.settings.hotkeys);
         }
+        let active = self.active_shortcuts();
         if let Some(t) = &self.tray {
-            t.set_shortcuts(&self.shortcut_texts());
+            t.set_shortcuts(&active);
+        }
+        if let Some(m) = &self.app_menu {
+            m.set_shortcuts(&active);
         }
     }
 
-    fn shortcut_texts(&self) -> [Option<String>; 4] {
-        std::array::from_fn(|i| self.shortcut_text(i))
-    }
-
-    fn shortcut_text(&self, i: usize) -> Option<String> {
-        self.settings.hotkeys.then(|| self.settings.shortcuts[i].as_ref().map(Shortcut::compact)).flatten()
+    /// Aktive globale Kürzel (leer, wenn ausgeschaltet) für die Anzeige in Menüs.
+    fn active_shortcuts(&self) -> [Option<Shortcut>; 4] {
+        std::array::from_fn(|i| self.active_shortcut(i).cloned())
     }
 
     /// Nimmt während der Kürzel-Aufnahme die nächste Tastenkombination entgegen.
@@ -961,6 +1032,8 @@ impl KadraApp {
         });
         let Some((key, mods)) = pressed else { return };
         if key == egui::Key::Escape && !mods.any() {
+            // Esc verbrauchen, damit es nicht zusätzlich das Einstellungsfenster schließt.
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             self.recording = None;
             self.apply_hotkeys();
             return;
@@ -1067,7 +1140,7 @@ impl eframe::App for KadraApp {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.hide_to_background(ctx);
         }
-        self.handle_tray(ctx);
+        self.handle_menu_actions(ctx);
         // Globale Hotkeys
         while let Ok(id) = self.hotkey_rx.try_recv() {
             if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.kind_for(id)) {
@@ -1215,6 +1288,40 @@ fn human_size(bytes: usize) -> String {
         b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1 << 20) as f64),
         b => format!("{} KB", (b + 1023) / 1024),
     }
+}
+
+fn open_url(target: &str) {
+    let _ = std::process::Command::new("open").arg(target).spawn();
+}
+
+/// Bearbeitungsbefehl aus dem Menü an das fokussierte Textfeld weitergeben.
+/// Gibt `true` zurück, wenn der Befehl damit erledigt ist.
+fn forward_to_text_field(ctx: &egui::Context, action: Action) -> bool {
+    use egui::{Event, Key, Modifiers};
+    let key = |key: Key, shift: bool| Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers: if shift { Modifiers::COMMAND | Modifiers::SHIFT } else { Modifiers::COMMAND },
+    };
+    let event = match action {
+        Action::Copy => Event::Copy,
+        Action::Cut => Event::Cut,
+        Action::Paste => {
+            let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+            if text.is_empty() {
+                return true;
+            }
+            Event::Paste(text.replace("\r\n", "\n"))
+        }
+        Action::Undo => key(Key::Z, false),
+        Action::Redo => key(Key::Z, true),
+        Action::SelectAll => key(Key::A, false),
+        _ => return false,
+    };
+    ctx.input_mut(|i| i.events.push(event));
+    true
 }
 
 fn copy_to_clipboard(img: &RgbaImage) -> Result<(), String> {
