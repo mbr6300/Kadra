@@ -37,7 +37,8 @@ pub struct KadraApp {
     hotkey_rx: Receiver<u32>,
     show_settings: bool,
     show_permission: bool,
-    confirm_delete: Option<String>,
+    /// Zuletzt gelöschte Aufnahme (Position, Eintrag, Zeitpunkt) für „Rückgängig“.
+    undo_delete: Option<(usize, Item, Instant)>,
     overlay_fix_frames: u8,
     /// Modi, deren Kürzel nicht registriert werden konnte.
     hotkey_failed: Vec<CaptureKind>,
@@ -59,6 +60,21 @@ pub struct KadraApp {
 }
 
 const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗔", "🖵", "🖥"];
+
+/// So lange wird nach dem Löschen „Rückgängig“ angeboten.
+const UNDO_DELETE_FOR: Duration = Duration::from_secs(8);
+
+/// Runder Löschen-Knopf (dunkler Kreis mit weißem ×, rot beim Darüberfahren).
+fn paint_delete_badge(p: &egui::Painter, c: egui::Pos2, hot: bool) {
+    let r = 9.0;
+    let bg = if hot { Color32::from_rgb(214, 58, 48) } else { Color32::from_black_alpha(190) };
+    p.circle_filled(c + Vec2::new(0.0, 1.0), r + 0.5, Color32::from_black_alpha(60));
+    p.circle_filled(c, r, bg);
+    p.circle_stroke(c, r, egui::Stroke::new(1.2, Color32::from_white_alpha(200)));
+    let (a, st) = (3.6, egui::Stroke::new(1.8, Color32::WHITE));
+    p.line_segment([c + Vec2::new(-a, -a), c + Vec2::new(a, a)], st);
+    p.line_segment([c + Vec2::new(-a, a), c + Vec2::new(a, -a)], st);
+}
 
 /// Mindestabstand zwischen den drei Gruppen der oberen Leiste.
 const TOOLBAR_GAP: f32 = 16.0;
@@ -90,6 +106,8 @@ fn install_symbol_font(ctx: &egui::Context) {
 impl KadraApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
+        // Gelöschte Aufnahmen der letzten Sitzung endgültig entfernen.
+        library::empty_trash();
         let (thumb_tx, thumb_rx) = channel();
         let (hk_tx, hotkey_rx) = channel();
         let (estimate_tx, estimate_rx) = channel();
@@ -117,7 +135,7 @@ impl KadraApp {
             hotkey_rx,
             show_settings: false,
             show_permission: false,
-            confirm_delete: None,
+            undo_delete: None,
             overlay_fix_frames: 0,
             hotkey_failed,
             recording: None,
@@ -669,8 +687,10 @@ impl KadraApp {
         }
         let current = self.editor.as_ref().map(|e| e.id.clone());
         let mut open = None;
+        let mut delete = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
+                ui.add_space(4.0);
                 for it in &self.items {
                     let h = 76.0;
                     let size = it.texture.as_ref().map(|t| {
@@ -687,15 +707,24 @@ impl KadraApp {
                         ui.painter().rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "…", Default::default(), Color32::GRAY);
                     }
+                    // Runder Löschen-Knopf an der rechten oberen Ecke (beim Darüberfahren)
+                    let del_rect = egui::Rect::from_center_size(rect.right_top() + Vec2::new(-11.0, 11.0), Vec2::splat(20.0));
+                    let del = ui.interact(del_rect, ui.id().with(("del", &it.id)), egui::Sense::click());
+                    let hovered = resp.hovered() || del.hovered();
                     let stroke = if selected {
                         egui::Stroke::new(3.0, ui_kit::accent_fg(ui))
-                    } else if resp.hovered() {
+                    } else if hovered {
                         egui::Stroke::new(1.5, Color32::GRAY)
                     } else {
                         egui::Stroke::NONE
                     };
                     ui.painter().rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Outside);
-                    if resp.clicked() {
+                    if hovered {
+                        paint_delete_badge(ui.painter(), del_rect.center(), del.hovered());
+                    }
+                    if del.on_hover_text("Löschen").clicked() {
+                        delete = Some(it.id.clone());
+                    } else if resp.clicked() {
                         open = Some(it.id.clone());
                     }
                     resp.context_menu(|ui| {
@@ -703,8 +732,8 @@ impl KadraApp {
                             open = Some(it.id.clone());
                             ui.close();
                         }
-                        if ui.button("🗑 Aus Bibliothek löschen…").clicked() {
-                            self.confirm_delete = Some(it.id.clone());
+                        if ui.button("🗑 Löschen").clicked() {
+                            delete = Some(it.id.clone());
                             ui.close();
                         }
                     })
@@ -713,8 +742,31 @@ impl KadraApp {
                 }
             });
         });
-        if let Some(id) = open {
+        if let Some(id) = delete {
+            self.delete_item(&id);
+        } else if let Some(id) = open {
             self.open_item(&id);
+        }
+    }
+
+    /// Aufnahme sofort löschen; ein paar Sekunden lang per „Rückgängig“ zurückholbar.
+    fn delete_item(&mut self, id: &str) {
+        let Some(index) = self.items.iter().position(|i| i.id == id) else { return };
+        if self.editor.as_ref().is_some_and(|e| e.id == id) {
+            // Ohne Speichern schließen – die Aufnahme wird ja gelöscht.
+            self.editor = None;
+        }
+        let item = self.items.remove(index);
+        library::trash(id);
+        self.undo_delete = Some((index, item, Instant::now()));
+        self.status = None;
+    }
+
+    fn undo_last_delete(&mut self) {
+        if let Some((index, item, _)) = self.undo_delete.take() {
+            library::restore(&item.id);
+            let index = index.min(self.items.len());
+            self.items.insert(index, item);
         }
     }
 
@@ -978,33 +1030,6 @@ impl KadraApp {
             });
     }
 
-    fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.confirm_delete.clone() else { return };
-        let mut close = false;
-        egui::Window::new("Aufnahme löschen?")
-            .collapsible(false)
-            .resizable(false)
-            .min_width(380.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!("„{id}“ wird endgültig aus der Bibliothek gelöscht."));
-                ui.weak("Dies kann nicht rückgängig gemacht werden.");
-                ui.add_space(6.0);
-                let (delete, cancel) = ui_kit::dialog_buttons(ui, "Löschen", true);
-                if delete {
-                    library::delete(&id);
-                    self.items.retain(|i| i.id != id);
-                    if self.editor.as_ref().is_some_and(|e| e.id == id) {
-                        self.editor = None;
-                    }
-                }
-                close = delete || cancel;
-            });
-        if close {
-            self.confirm_delete = None;
-        }
-    }
-
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.wants_keyboard_input() {
             return;
@@ -1094,7 +1119,7 @@ impl eframe::App for KadraApp {
         if self.recording.is_some() {
             // Tastendrücke gehören der Kürzel-Aufnahme, nicht dem Editor.
             self.record_shortcut(ctx);
-        } else if self.pending_export.is_some() || self.confirm_delete.is_some() || self.show_background_hint {
+        } else if self.pending_export.is_some() || self.show_background_hint {
             // Dialog offen: Tasten gehören dem Dialog.
         } else {
             self.global_shortcuts(ctx);
@@ -1115,9 +1140,19 @@ impl eframe::App for KadraApp {
             self.toolbar(ctx, ui);
         });
 
-        egui::TopBottomPanel::bottom("status").exact_height(28.0).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if let Some((msg, t)) = &self.status {
+        // „Rückgängig“ nach dem Löschen nur kurz anbieten
+        if self.undo_delete.as_ref().is_some_and(|(_, _, t)| t.elapsed() >= UNDO_DELETE_FOR) {
+            self.undo_delete = None;
+        }
+        egui::TopBottomPanel::bottom("status").exact_height(32.0).show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                if self.undo_delete.is_some() {
+                    ui.label("Aufnahme gelöscht");
+                    if ui.add(egui::Button::new("Rückgängig").min_size(Vec2::new(0.0, 24.0))).clicked() {
+                        self.undo_last_delete();
+                    }
+                    ctx.request_repaint_after(Duration::from_millis(500));
+                } else if let Some((msg, t)) = &self.status {
                     if t.elapsed() < Duration::from_secs(6) {
                         ui.label(msg);
                         ctx.request_repaint_after(Duration::from_secs(1));
@@ -1152,7 +1187,6 @@ impl eframe::App for KadraApp {
         self.export_dialog(ctx);
         self.background_hint_dialog(ctx);
         self.permission_dialog(ctx);
-        self.delete_dialog(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

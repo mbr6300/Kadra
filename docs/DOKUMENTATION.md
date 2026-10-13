@@ -92,6 +92,9 @@ Qualitätsregler und geschätzter Dateigröße. Formate ohne Transparenz erhalte
 Jede Aufnahme wird automatisch gespeichert und erscheint in der Leiste unten.
 Gespeichert werden Originalbild, Anmerkungen (JSON) und Vorschaubild – Aufnahmen bleiben also
 jederzeit weiter bearbeitbar. Ort: `~/Library/Application Support/Kadra/library/`.
+**Schnell löschen:** Beim Darüberfahren erscheint oben rechts am Vorschaubild ein runder ×-Knopf.
+Ein Klick löscht die Aufnahme sofort; einige Sekunden lang lässt sie sich in der Statusleiste mit
+**Rückgängig** zurückholen (endgültig entfernt wird sie beim nächsten Start).
 Rechtsklick auf ein Vorschaubild: Öffnen oder Löschen.
 
 ### 2.5 Menüleiste und Hintergrundbetrieb
