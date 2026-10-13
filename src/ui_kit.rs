@@ -1,4 +1,4 @@
-//! Gemeinsame UI-Bausteine: Signaturfarbe und Leisten-Buttons im SnagIt-Stil.
+//! Gemeinsame UI-Bausteine: Signaturfarbe, Leisten-Buttons, Dialog-Buttons und Grundstil.
 
 use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 

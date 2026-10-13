@@ -1,6 +1,7 @@
 # SnapIt
 
-Screenshot-Werkzeug im Stil von SnagIt (ohne Video), geschrieben in Rust (eframe/egui, xcap, tiny-skia).
+Screenshot-Werkzeug für macOS: Bildschirmfotos aufnehmen, beschriften und exportieren.
+Geschrieben in Rust (eframe/egui, xcap, tiny-skia).
 
 Ausführliche Beschreibung aller Funktionen, Architektur und möglicher Erweiterungen:
 **[docs/DOKUMENTATION.md](docs/DOKUMENTATION.md)**

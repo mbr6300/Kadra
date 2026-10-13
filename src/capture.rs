@@ -6,7 +6,7 @@ use xcap::Monitor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureKind {
-    /// Bereich ziehen oder Fenster anklicken (wie SnagIt "All-in-One").
+    /// Bereich ziehen oder Fenster anklicken (beides in einem Modus).
     Region,
     Window,
     /// Bildschirm unter dem Mauszeiger.

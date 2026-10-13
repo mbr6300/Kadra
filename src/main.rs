@@ -1,4 +1,4 @@
-//! SnapIt – Screenshot-Werkzeug im Stil von SnagIt (ohne Video).
+//! SnapIt – Screenshot-Werkzeug für macOS: aufnehmen, beschriften, exportieren.
 
 mod app;
 mod capture;

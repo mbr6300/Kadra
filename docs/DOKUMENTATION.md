@@ -1,6 +1,6 @@
 # SnapIt – Dokumentation
 
-SnapIt ist ein Screenshot-Werkzeug für macOS im Stil von SnagIt – ohne Videoaufnahme.
+SnapIt ist ein Screenshot-Werkzeug für macOS.
 Es nimmt Bildschirmbereiche, Fenster oder ganze Bildschirme auf, bietet einen Editor zum
 Beschriften und Nachbearbeiten und gibt das Ergebnis als Datei oder über die Zwischenablage aus.
 Geschrieben in Rust (eframe/egui), läuft als native App mit Menüleisten-Symbol.
@@ -28,7 +28,7 @@ Voraussetzungen: macOS 12+, Apple Silicon (Universal-Build möglich, siehe Absch
 
 | Modus | Standard-Kürzel | Beschreibung |
 |---|---|---|
-| **Bereich** | ⌃⇧1 | Bereich aufziehen **oder** ein Fenster anklicken (All-in-One wie bei SnagIt) |
+| **Bereich** | ⌃⇧1 | Bereich aufziehen **oder** ein Fenster anklicken (beides in einem Modus) |
 | **Fenster** | ⌃⇧2 | Fenster unter der Maus wird hervorgehoben; Klick nimmt es auf |
 | **Bildschirm** | ⌃⇧3 | Bildschirm, auf dem sich der Mauszeiger befindet |
 | **Alle Bildschirme** | ⌃⇧4 | Alle Monitore zu einem Bild zusammengesetzt |

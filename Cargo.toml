@@ -3,7 +3,7 @@ name = "snapit"
 version = "0.8.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "Screenshot-Werkzeug für macOS im Stil von SnagIt"
+description = "Screenshot-Werkzeug für macOS – aufnehmen, beschriften, exportieren"
 repository = "https://github.com/mbr6300/SnapIt"
 
 [dependencies]
