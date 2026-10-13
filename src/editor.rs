@@ -328,6 +328,8 @@ impl Editor {
         self.doc.effects = s.effects;
         self.selected = None;
         self.editing_text = None;
+        // Nach Undo/Redo beginnt die nächste Änderung immer einen eigenen Undo-Schritt.
+        self.coalesce = None;
         if self.tool == Tool::Crop {
             self.crop = Some(self.full_rect());
             self.crop_aspect = None;
@@ -531,7 +533,10 @@ impl Editor {
         let img = imageops::resize(&*self.doc.image, w as u32, h as u32, imageops::FilterType::Lanczos3);
         for a in &mut self.doc.annotations {
             a.shape.map_points(|q| [q[0] * factor, q[1] * factor]);
-            a.style.width *= factor;
+            // Beim Füllen ist `width` die Farbtoleranz in Prozent, keine Länge.
+            if !matches!(a.shape, Shape::Fill { .. }) {
+                a.style.width *= factor;
+            }
             a.style.font_size *= factor;
         }
         self.set_image(img);
@@ -1272,6 +1277,42 @@ fn drag_crop(orig: Rect, grip: Option<(i8, i8)>, d: Vec2, bounds: Rect, aspect: 
         }
     };
     Rect::from_min_max(r.min.round(), r.max.round())
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn editor_with(shape: Shape) -> Editor {
+        let mut doc = Document::new(RgbaImage::new(100, 80));
+        doc.annotations.push(Annotation { shape, style: Style { width: 20.0, ..Style::default() } });
+        Editor::new("t".into(), doc)
+    }
+
+    #[test]
+    fn change_after_undo_is_own_step() {
+        let mut ed = editor_with(Shape::Step { pos: [10.0, 10.0], n: 1 });
+        let nudge = |ed: &mut Editor| {
+            ed.push_undo_coalesced("nudge0".into());
+            ed.doc.annotations[0].shape.translate(Vec2::new(1.0, 0.0));
+        };
+        nudge(&mut ed);
+        ed.undo();
+        nudge(&mut ed);
+        assert!(ed.can_undo(), "zweites Verschieben ist rückgängig machbar");
+        assert!(!ed.can_redo(), "neue Änderung leert den Redo-Stapel");
+        ed.undo();
+        assert_eq!(ed.doc.annotations[0].shape, Shape::Step { pos: [10.0, 10.0], n: 1 });
+    }
+
+    #[test]
+    fn resize_keeps_fill_tolerance() {
+        let mut ed = editor_with(Shape::Fill { pos: [40.0, 40.0] });
+        ed.resize(0.5);
+        let a = &ed.doc.annotations[0];
+        assert_eq!(a.shape, Shape::Fill { pos: [20.0, 20.0] });
+        assert_eq!(a.style.width, 20.0, "Toleranz unverändert");
+    }
 }
 
 #[cfg(test)]

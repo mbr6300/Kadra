@@ -1,6 +1,6 @@
 //! Hauptanwendung: Aufnahme-Ablauf, Bibliothek, Editor-Layout.
 
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Vec2, ViewportCommand};
@@ -32,7 +32,8 @@ pub struct KadraApp {
     phase: Phase,
     saved_window: Option<(egui::Pos2, Vec2)>,
     status: Option<(String, Instant)>,
-    thumb_tx: Sender<(String, RgbaImage)>,
+    /// Schreibt alle Änderungen an der Bibliothek nacheinander im Hintergrund.
+    saver: library::Saver,
     thumb_rx: Receiver<(String, RgbaImage)>,
     hotkeys: Option<Hotkeys>,
     hotkey_rx: Receiver<u32>,
@@ -133,7 +134,7 @@ impl KadraApp {
             phase: Phase::Normal,
             saved_window: None,
             status: None,
-            thumb_tx,
+            saver: library::Saver::new(thumb_tx, cc.egui_ctx.clone()),
             thumb_rx,
             hotkeys,
             hotkey_rx,
@@ -276,14 +277,7 @@ impl KadraApp {
             match action {
                 Action::Capture(kind) => self.start_capture(ctx, kind),
                 Action::Show => self.show_window(ctx),
-                Action::CopyLast => {
-                    if self.editor.is_none() {
-                        if let Some(id) = self.items.first().map(|i| i.id.clone()) {
-                            self.open_item(&id);
-                        }
-                    }
-                    self.copy();
-                }
+                Action::CopyLast => self.copy_last(),
                 Action::Settings => {
                     self.show_settings = true;
                     self.show_window(ctx);
@@ -339,9 +333,14 @@ impl KadraApp {
 
     fn poll_capture(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let Phase::Capturing(rx) = &self.phase else { return };
-        let Ok(res) = rx.try_recv() else {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
+        let res = match rx.try_recv() {
+            Ok(res) => res,
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            // Aufnahme-Thread ist abgestürzt – sonst bliebe Kadra unsichtbar im Aufnahmezustand hängen.
+            Err(TryRecvError::Disconnected) => Err("Aufnahme abgebrochen".to_string()),
         };
         match res {
             Err(e) => {
@@ -394,6 +393,8 @@ impl KadraApp {
             return;
         }
         self.flush_save(true);
+        // Noch ausstehende Schreibvorgänge abwarten (z. B. das PNG einer eben gemachten Aufnahme).
+        self.saver.wait();
         match library::load(id) {
             Ok(doc) => {
                 let mut ed = Editor::new(id.to_string(), doc);
@@ -414,12 +415,7 @@ impl KadraApp {
         }
         ed.dirty = false;
         let image_changed = std::mem::take(&mut ed.image_changed);
-        let (id, doc, tx) = (ed.id.clone(), ed.doc.clone(), self.thumb_tx.clone());
-        std::thread::spawn(move || {
-            if let Ok(thumb) = library::save(&id, &doc, image_changed) {
-                let _ = tx.send((id, thumb));
-            }
-        });
+        self.saver.save(ed.id.clone(), ed.doc.clone(), image_changed);
     }
 
     // ---------- Export ----------
@@ -434,6 +430,25 @@ impl KadraApp {
                 Ok(()) => self.notify("In die Zwischenablage kopiert"),
                 Err(e) => self.notify(format!("Zwischenablage: {e}")),
             }
+        }
+    }
+
+    /// Neueste Aufnahme der Bibliothek kopieren – unabhängig davon, welches Bild gerade offen ist.
+    fn copy_last(&mut self) {
+        let Some(id) = self.items.first().map(|i| i.id.clone()) else {
+            self.notify("Keine Aufnahme in der Bibliothek");
+            return;
+        };
+        if self.editor.as_ref().is_some_and(|e| e.id == id) {
+            // Offener Editor hat den aktuellsten (evtl. noch ungespeicherten) Stand.
+            self.copy();
+            return;
+        }
+        self.saver.wait();
+        let res = library::load(&id).and_then(|doc| copy_to_clipboard(&render::render(&doc)));
+        match res {
+            Ok(()) => self.notify("Letzte Aufnahme in die Zwischenablage kopiert"),
+            Err(e) => self.notify(format!("Kopieren fehlgeschlagen: {e}")),
         }
     }
 
@@ -807,19 +822,22 @@ impl KadraApp {
     /// Aufnahme sofort löschen; ein paar Sekunden lang per „Rückgängig“ zurückholbar.
     fn delete_item(&mut self, id: &str) {
         let Some(index) = self.items.iter().position(|i| i.id == id) else { return };
-        if self.editor.as_ref().is_some_and(|e| e.id == id) {
-            // Ohne Speichern schließen – die Aufnahme wird ja gelöscht.
-            self.editor = None;
+        if let Some(ed) = self.editor.take_if(|e| e.id == id) {
+            // Letzten Stand trotzdem sichern, damit „Rückgängig“ ihn vollständig zurückbringt.
+            if ed.dirty {
+                self.saver.save(ed.id.clone(), ed.doc.clone(), ed.image_changed);
+            }
         }
         let item = self.items.remove(index);
-        library::trash(id);
+        // Über den Speicher-Thread, damit ein noch laufendes Speichern die Dateien nicht wiederherstellt.
+        self.saver.trash(id.to_string());
         self.undo_delete = Some((index, item, Instant::now()));
         self.status = None;
     }
 
     fn undo_last_delete(&mut self) {
         if let Some((index, item, _)) = self.undo_delete.take() {
-            library::restore(&item.id);
+            self.saver.restore(item.id.clone());
             let index = index.min(self.items.len());
             self.items.insert(index, item);
         }
@@ -1093,6 +1111,8 @@ impl KadraApp {
                             platform::open_privacy_settings();
                         }
                         if ui.add(egui::Button::new("Kadra beenden").min_size(b)).clicked() {
+                            // Sonst fängt `update` das Schließen ab und blendet nur aus.
+                            self.quitting = true;
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
                         if ui.add(egui::Button::new("Schließen").min_size(b)).clicked() {
@@ -1266,9 +1286,11 @@ impl eframe::App for KadraApp {
         if let Some(ed) = &mut self.editor {
             if ed.dirty {
                 ed.dirty = false;
-                let _ = library::save(&ed.id, &ed.doc, ed.image_changed);
+                self.saver.save(ed.id.clone(), ed.doc.clone(), ed.image_changed);
             }
         }
+        // Alle ausstehenden Schreibvorgänge abschließen, bevor der Prozess endet.
+        self.saver.finish();
     }
 }
 
