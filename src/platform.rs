@@ -145,6 +145,8 @@ mod cg {
         pub fn CFDictionaryGetValue(dict: CFRef, key: CFRef) -> CFRef;
         pub fn CFNumberGetValue(num: CFRef, kind: isize, out: *mut c_void) -> bool;
         pub fn CFBooleanGetValue(b: CFRef) -> bool;
+        pub fn CFStringGetLength(s: CFRef) -> isize;
+        pub fn CFStringGetMaximumSizeForEncoding(len: isize, enc: u32) -> isize;
         pub fn CFStringGetCString(s: CFRef, buf: *mut c_char, len: isize, enc: u32) -> bool;
         pub fn CFRelease(cf: CFRef);
     }
@@ -162,10 +164,16 @@ mod cg {
     }
 
     pub unsafe fn string(d: CFRef, k: CFRef) -> String {
-        let v = unsafe { CFDictionaryGetValue(d, k) };
-        let mut buf = [0 as c_char; 512];
         // 0x0800_0100 = kCFStringEncodingUTF8
-        if !v.is_null() && unsafe { CFStringGetCString(v, buf.as_mut_ptr(), buf.len() as isize, 0x0800_0100) } {
+        const UTF8: u32 = 0x0800_0100;
+        let v = unsafe { CFDictionaryGetValue(d, k) };
+        if v.is_null() {
+            return String::new();
+        }
+        // Puffer passend zur Länge – ein fester Puffer liefert bei langen Titeln gar nichts.
+        let max = unsafe { CFStringGetMaximumSizeForEncoding(CFStringGetLength(v), UTF8) };
+        let mut buf = vec![0 as c_char; max.max(0) as usize + 1];
+        if unsafe { CFStringGetCString(v, buf.as_mut_ptr(), buf.len() as isize, UTF8) } {
             unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
         } else {
             String::new()

@@ -31,6 +31,8 @@ pub enum Shape {
     Step { pos: P, n: u32 },
     Blur { a: P, b: P },
     Pixelate { a: P, b: P },
+    /// Deckender Balken – sicher für vertrauliche Inhalte (anders als Weichzeichnen/Verpixeln).
+    Redact { a: P, b: P },
     Spotlight { a: P, b: P },
     /// Farbeimer: füllt die zusammenhängende Fläche ab `pos` (Toleranz = style.width).
     Fill { pos: P },
@@ -57,6 +59,7 @@ impl Shape {
             | Shape::Highlight { a, b }
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
+            | Shape::Redact { a, b }
             | Shape::Spotlight { a, b } => {
                 mv(a);
                 mv(b);
@@ -75,6 +78,7 @@ impl Shape {
             | Shape::Highlight { a, b }
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
+            | Shape::Redact { a, b }
             | Shape::Spotlight { a, b } => {
                 vec![pos(*a), Pos2::new(b[0], a[1]), pos(*b), Pos2::new(a[0], b[1])]
             }
@@ -96,6 +100,7 @@ impl Shape {
             | Shape::Highlight { a, b }
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
+            | Shape::Redact { a, b }
             | Shape::Spotlight { a, b } => match idx {
                 0 => *a = p(q),
                 1 => {

@@ -26,13 +26,14 @@ pub enum Tool {
     Step,
     Blur,
     Pixelate,
+    Redact,
     Spotlight,
     Fill,
     Crop,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 15] = [
         Tool::Select,
         Tool::Arrow,
         Tool::Line,
@@ -44,6 +45,7 @@ impl Tool {
         Tool::Step,
         Tool::Blur,
         Tool::Pixelate,
+        Tool::Redact,
         Tool::Spotlight,
         Tool::Fill,
         Tool::Crop,
@@ -62,6 +64,7 @@ impl Tool {
             Tool::Step => "①",
             Tool::Blur => "💧",
             Tool::Pixelate => "▦",
+            Tool::Redact => "⬛",
             Tool::Spotlight => "🔦",
             Tool::Fill => "🎨",
             Tool::Crop => "✂",
@@ -81,6 +84,7 @@ impl Tool {
             Tool::Step => "Nummerierung",
             Tool::Blur => "Weichzeichnen",
             Tool::Pixelate => "Verpixeln",
+            Tool::Redact => "Schwärzen",
             Tool::Spotlight => "Spotlight",
             Tool::Fill => "Füllen",
             Tool::Crop => "Zuschneiden",
@@ -100,6 +104,7 @@ impl Tool {
             Tool::Step => Key::N,
             Tool::Blur => Key::B,
             Tool::Pixelate => Key::X,
+            Tool::Redact => Key::K,
             Tool::Spotlight => Key::S,
             Tool::Fill => Key::F,
             Tool::Crop => Key::C,
@@ -118,6 +123,7 @@ impl Tool {
             Shape::Step { .. } => Tool::Step,
             Shape::Blur { .. } => Tool::Blur,
             Shape::Pixelate { .. } => Tool::Pixelate,
+            Shape::Redact { .. } => Tool::Redact,
             Shape::Spotlight { .. } => Tool::Spotlight,
             Shape::Fill { .. } => Tool::Fill,
         }
@@ -131,6 +137,7 @@ impl Tool {
             Tool::Step => Style { font_size: 28.0, ..base },
             Tool::Blur => Style { width: 6.0, shadow: false, ..base },
             Tool::Pixelate => Style { width: 4.0, shadow: false, ..base },
+            Tool::Redact => Style { stroke: [0, 0, 0, 255], shadow: false, ..base },
             Tool::Pen => Style { width: 4.0, ..base },
             // width = Toleranz in Prozent
             Tool::Fill => Style { stroke: [255, 225, 0, 255], width: 15.0, shadow: false, ..base },
@@ -153,7 +160,7 @@ pub const MAIN_GROUPS: [ToolGroup; 9] = [
     ToolGroup { name: "Nummer", tools: &[Tool::Step] },
     ToolGroup { name: "Marker", tools: &[Tool::Highlight] },
     ToolGroup { name: "Füllen", tools: &[Tool::Fill] },
-    ToolGroup { name: "Unkenntlich", tools: &[Tool::Blur, Tool::Pixelate] },
+    ToolGroup { name: "Unkenntlich", tools: &[Tool::Blur, Tool::Pixelate, Tool::Redact] },
     ToolGroup { name: "Zuschneiden", tools: &[Tool::Crop] },
 ];
 
@@ -328,6 +335,8 @@ impl Editor {
         self.doc.effects = s.effects;
         self.selected = None;
         self.editing_text = None;
+        // Nach Undo/Redo beginnt die nächste Änderung immer einen eigenen Undo-Schritt.
+        self.coalesce = None;
         if self.tool == Tool::Crop {
             self.crop = Some(self.full_rect());
             self.crop_aspect = None;
@@ -531,7 +540,10 @@ impl Editor {
         let img = imageops::resize(&*self.doc.image, w as u32, h as u32, imageops::FilterType::Lanczos3);
         for a in &mut self.doc.annotations {
             a.shape.map_points(|q| [q[0] * factor, q[1] * factor]);
-            a.style.width *= factor;
+            // Beim Füllen ist `width` die Farbtoleranz in Prozent, keine Länge.
+            if !matches!(a.shape, Shape::Fill { .. }) {
+                a.style.width *= factor;
+            }
             a.style.font_size *= factor;
         }
         self.set_image(img);
@@ -1275,6 +1287,42 @@ fn drag_crop(orig: Rect, grip: Option<(i8, i8)>, d: Vec2, bounds: Rect, aspect: 
 }
 
 #[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn editor_with(shape: Shape) -> Editor {
+        let mut doc = Document::new(RgbaImage::new(100, 80));
+        doc.annotations.push(Annotation { shape, style: Style { width: 20.0, ..Style::default() } });
+        Editor::new("t".into(), doc)
+    }
+
+    #[test]
+    fn change_after_undo_is_own_step() {
+        let mut ed = editor_with(Shape::Step { pos: [10.0, 10.0], n: 1 });
+        let nudge = |ed: &mut Editor| {
+            ed.push_undo_coalesced("nudge0".into());
+            ed.doc.annotations[0].shape.translate(Vec2::new(1.0, 0.0));
+        };
+        nudge(&mut ed);
+        ed.undo();
+        nudge(&mut ed);
+        assert!(ed.can_undo(), "zweites Verschieben ist rückgängig machbar");
+        assert!(!ed.can_redo(), "neue Änderung leert den Redo-Stapel");
+        ed.undo();
+        assert_eq!(ed.doc.annotations[0].shape, Shape::Step { pos: [10.0, 10.0], n: 1 });
+    }
+
+    #[test]
+    fn resize_keeps_fill_tolerance() {
+        let mut ed = editor_with(Shape::Fill { pos: [40.0, 40.0] });
+        ed.resize(0.5);
+        let a = &ed.doc.annotations[0];
+        assert_eq!(a.shape, Shape::Fill { pos: [20.0, 20.0] });
+        assert_eq!(a.style.width, 20.0, "Toleranz unverändert");
+    }
+}
+
+#[cfg(test)]
 mod crop_tests {
     use super::*;
 
@@ -1344,6 +1392,7 @@ fn new_shape(t: Tool, a: P) -> Shape {
         Tool::Highlight => Shape::Highlight { a, b: a },
         Tool::Blur => Shape::Blur { a, b: a },
         Tool::Pixelate => Shape::Pixelate { a, b: a },
+        Tool::Redact => Shape::Redact { a, b: a },
         Tool::Spotlight => Shape::Spotlight { a, b: a },
         _ => Shape::Rect { a, b: a },
     }
@@ -1371,6 +1420,7 @@ fn update_shape(shape: &mut Shape, start: Pos2, cur: Pos2, shift: bool, zoom: f3
         | Shape::Highlight { b, .. }
         | Shape::Blur { b, .. }
         | Shape::Pixelate { b, .. }
+        | Shape::Redact { b, .. }
         | Shape::Spotlight { b, .. } => {
             let mut c = cur;
             if shift {
@@ -1392,6 +1442,7 @@ pub fn bounds(a: &Annotation) -> Rect {
         Shape::Highlight { a: pa, b }
         | Shape::Blur { a: pa, b }
         | Shape::Pixelate { a: pa, b }
+        | Shape::Redact { a: pa, b }
         | Shape::Spotlight { a: pa, b } => rect(*pa, *b),
         Shape::Pen { pts } => {
             let mut r = Rect::NOTHING;
@@ -1493,6 +1544,12 @@ pub fn paint_annotation(painter: &Painter, a: &Annotation, img_rect: Rect, zoom:
                 painter.rect_filled(rr(*pa, *b), 0.0, Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 100));
             }
         }
+        Shape::Redact { a: pa, b } => {
+            if !shadow {
+                let c = st.stroke;
+                painter.rect_filled(rr(*pa, *b), 0.0, Color32::from_rgb(c[0], c[1], c[2]));
+            }
+        }
         Shape::Text { pos: tp, text } => {
             let (w, h) = render::text_size(text, st.font_size);
             let pad = st.font_size * 0.25;
@@ -1581,6 +1638,11 @@ fn style_ui(ui: &mut Ui, kind: Tool, st: &mut Style) {
                 ui.label("Intensität");
                 ui.add(egui::Slider::new(&mut st.width, 1.0..=30.0));
             });
+            ui.weak("Für Passwörter und vertrauliche Daten besser Schwärzen (K) verwenden – \
+                     weichgezeichneter oder verpixelter Text lässt sich teils rekonstruieren.");
+        }
+        Tool::Redact => {
+            ui.weak("Deckender Balken ohne Transparenz – der Inhalt darunter ist im Export nicht mehr enthalten.");
         }
         Tool::Text | Tool::Step => {
             ui.horizontal(|ui| {
@@ -1598,7 +1660,7 @@ fn style_ui(ui: &mut Ui, kind: Tool, st: &mut Style) {
         }
         _ => {}
     }
-    if !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Highlight | Tool::Fill) {
+    if !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Redact | Tool::Spotlight | Tool::Highlight | Tool::Fill) {
         ui.checkbox(&mut st.shadow, "Schatten");
     }
 }
