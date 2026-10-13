@@ -94,11 +94,34 @@ pub fn load(id: &str) -> Result<Document, String> {
     Ok(doc)
 }
 
-pub fn delete(id: &str) {
-    let dir = lib_dir();
-    for ext in ["png", "json", "thumb.png"] {
-        let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
+const ITEM_FILES: [&str; 3] = ["png", "json", "thumb.png"];
+
+fn trash_dir() -> PathBuf {
+    data_dir().join("trash")
+}
+
+/// Aufnahme in den internen Papierkorb verschieben (rückgängig machbar mit `restore`).
+pub fn trash(id: &str) {
+    let (dir, trash) = (lib_dir(), trash_dir());
+    let _ = fs::create_dir_all(&trash);
+    for ext in ITEM_FILES {
+        let name = format!("{id}.{ext}");
+        let _ = fs::rename(dir.join(&name), trash.join(&name));
     }
+}
+
+/// Aufnahme aus dem Papierkorb zurückholen.
+pub fn restore(id: &str) {
+    let (dir, trash) = (lib_dir(), trash_dir());
+    for ext in ITEM_FILES {
+        let name = format!("{id}.{ext}");
+        let _ = fs::rename(trash.join(&name), dir.join(&name));
+    }
+}
+
+/// Papierkorb endgültig leeren (beim Start).
+pub fn empty_trash() {
+    let _ = fs::remove_dir_all(trash_dir());
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -253,6 +276,22 @@ fn write_pdf(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trash_and_restore_item() {
+        let id = format!("test-trash-{}", std::process::id());
+        for ext in ITEM_FILES {
+            fs::write(lib_dir().join(format!("{id}.{ext}")), b"x").unwrap();
+        }
+        trash(&id);
+        assert!(ITEM_FILES.iter().all(|e| !lib_dir().join(format!("{id}.{e}")).exists()), "aus Bibliothek entfernt");
+        assert!(ITEM_FILES.iter().all(|e| trash_dir().join(format!("{id}.{e}")).exists()), "im Papierkorb");
+        restore(&id);
+        assert!(ITEM_FILES.iter().all(|e| lib_dir().join(format!("{id}.{e}")).exists()), "wiederhergestellt");
+        for ext in ITEM_FILES {
+            let _ = fs::remove_file(lib_dir().join(format!("{id}.{ext}")));
+        }
+    }
 
     #[test]
     fn jpeg_quality_changes_size() {

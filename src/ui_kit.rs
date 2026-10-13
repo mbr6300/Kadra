@@ -175,6 +175,36 @@ pub fn dialog_buttons(ui: &mut Ui, primary: &str, enabled: bool) -> (bool, bool)
     out
 }
 
+/// Runder Schließen-Knopf (28 pt Klickfläche, Hover-Kreis wie unter macOS).
+pub fn close_button(ui: &mut Ui) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+    let v = ui.visuals();
+    let c = rect.center();
+    if resp.hovered() {
+        let bg = if resp.is_pointer_button_down_on() { v.widgets.active.weak_bg_fill } else { v.widgets.hovered.weak_bg_fill };
+        ui.painter().circle_filled(c, 14.0, bg);
+    }
+    let col = if resp.hovered() { v.strong_text_color() } else { v.text_color() };
+    let (a, st) = (5.0, Stroke::new(1.8, col));
+    ui.painter().line_segment([c + Vec2::new(-a, -a), c + Vec2::new(a, a)], st);
+    ui.painter().line_segment([c + Vec2::new(-a, a), c + Vec2::new(a, -a)], st);
+    resp.on_hover_text("Schließen (Esc)")
+}
+
+/// Kopfzeile für Fenster ohne egui-Titelleiste: Titel links, Schließen-Knopf rechts.
+/// Gibt `true` zurück, wenn geschlossen werden soll.
+pub fn window_header(ui: &mut Ui, title: &str) -> bool {
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.heading(title);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            close = close_button(ui).clicked();
+        });
+    });
+    ui.separator();
+    close
+}
+
 /// Senkrechte Trennlinie in der Leiste.
 pub fn bar_separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(13.0, 40.0), Sense::hover());

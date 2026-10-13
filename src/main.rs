@@ -7,6 +7,7 @@ mod editor;
 mod hotkeys;
 mod icon;
 mod library;
+mod menu;
 mod overlay;
 mod platform;
 mod render;
