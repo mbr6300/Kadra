@@ -50,26 +50,6 @@ impl Shortcut {
         Some(HotKey::new(Some(m), key_code(self.key()?)?))
     }
 
-    /// Einzelne Tasten zur Anzeige als „Tastenkappen“.
-    pub fn caps(&self) -> Vec<String> {
-        let mac = cfg!(target_os = "macos");
-        let mut v = vec![];
-        if self.ctrl {
-            v.push(if mac { "⌃ Ctrl" } else { "Ctrl" }.to_string());
-        }
-        if self.alt {
-            v.push(if mac { "⌥ Option" } else { "Alt" }.to_string());
-        }
-        if self.shift {
-            v.push(if mac { "⇧ Shift" } else { "Shift" }.to_string());
-        }
-        if self.cmd {
-            v.push(if mac { "⌘ Cmd" } else { "Win" }.to_string());
-        }
-        v.push(self.key().map(|k| k.symbol_or_name().to_string()).unwrap_or_else(|| self.key.clone()));
-        v
-    }
-
     /// Kurzform, z. B. „⌃⇧1“.
     pub fn compact(&self) -> String {
         let mac = cfg!(target_os = "macos");
@@ -83,20 +63,142 @@ impl Shortcut {
     }
 }
 
-/// Zeichnet ein Kürzel als Tastenkappen.
-pub fn caps_ui(ui: &mut egui::Ui, sc: &Shortcut) {
-    ui.spacing_mut().item_spacing.x = 4.0;
-    for (i, cap) in sc.caps().iter().enumerate() {
-        if i > 0 {
-            ui.weak("+");
+/// Sondertaste für die gezeichneten Tastenkappen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mod {
+    Ctrl,
+    Alt,
+    Shift,
+    Cmd,
+}
+
+impl Mod {
+    pub fn word(self) -> &'static str {
+        match self {
+            Mod::Ctrl => "Ctrl",
+            Mod::Alt => if cfg!(target_os = "macos") { "Option" } else { "Alt" },
+            Mod::Shift => "Shift",
+            Mod::Cmd => if cfg!(target_os = "macos") { "Cmd" } else { "Win" },
         }
-        egui::Frame::new()
-            .fill(ui.visuals().widgets.inactive.bg_fill)
-            .stroke(ui.visuals().widgets.inactive.bg_stroke)
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(6, 2))
-            .show(ui, |ui| ui.label(egui::RichText::new(cap).monospace()));
     }
+}
+
+impl Shortcut {
+    /// Sondertasten in macOS-Reihenfolge (⌃ ⌥ ⇧ ⌘).
+    pub fn mods(&self) -> Vec<Mod> {
+        [(self.ctrl, Mod::Ctrl), (self.alt, Mod::Alt), (self.shift, Mod::Shift), (self.cmd, Mod::Cmd)]
+            .into_iter()
+            .filter_map(|(on, m)| on.then_some(m))
+            .collect()
+    }
+
+    pub fn key_label(&self) -> String {
+        self.key().map(|k| k.symbol_or_name().to_string()).unwrap_or_else(|| self.key.clone())
+    }
+
+    /// Ausgeschrieben, z. B. „Ctrl + Shift + 1“ (für Tooltips).
+    pub fn words(&self) -> String {
+        let mut v: Vec<String> = self.mods().iter().map(|m| m.word().to_string()).collect();
+        v.push(self.key_label());
+        v.join(" + ")
+    }
+}
+
+/// Zeichnet das Symbol einer Sondertaste als Vektorgrafik (zentriert in `c`, Kantenlänge `s`).
+pub fn paint_mod_symbol(p: &egui::Painter, m: Mod, c: egui::Pos2, s: f32, color: egui::Color32) {
+    use egui::{Pos2, Shape, Stroke};
+    let w = (s * 0.11).max(1.2);
+    let st = Stroke::new(w, color);
+    let pt = |x: f32, y: f32| Pos2::new(c.x + x * s, c.y + y * s);
+    match m {
+        // ⌃ – Dach
+        Mod::Ctrl => {
+            p.add(Shape::line(vec![pt(-0.3, 0.12), pt(0.0, -0.2), pt(0.3, 0.12)], st));
+        }
+        // ⇧ – Umriss-Pfeil
+        Mod::Shift => {
+            let pts = vec![
+                pt(0.0, -0.36),
+                pt(0.36, 0.02),
+                pt(0.16, 0.02),
+                pt(0.16, 0.34),
+                pt(-0.16, 0.34),
+                pt(-0.16, 0.02),
+                pt(-0.36, 0.02),
+            ];
+            p.add(Shape::closed_line(pts, st));
+        }
+        // ⌥ – Weiche
+        Mod::Alt => {
+            p.add(Shape::line(vec![pt(-0.38, -0.22), pt(-0.12, -0.22), pt(0.14, 0.24), pt(0.38, 0.24)], st));
+            p.line_segment([pt(0.1, -0.22), pt(0.38, -0.22)], st);
+        }
+        // ⌘ – Quadrat mit vier Schlaufen
+        Mod::Cmd => {
+            let (a, r) = (0.14, 0.11);
+            p.line_segment([pt(-a, -a - r), pt(-a, a + r)], st);
+            p.line_segment([pt(a, -a - r), pt(a, a + r)], st);
+            p.line_segment([pt(-a - r, -a), pt(a + r, -a)], st);
+            p.line_segment([pt(-a - r, a), pt(a + r, a)], st);
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                p.circle_stroke(pt(dx * (a + r), dy * (a + r)), r * s, st);
+            }
+        }
+    }
+}
+
+/// Farben für Tastenkappen: (Kappe, Symbol/Text).
+pub fn cap_colors(ui: &egui::Ui, on_accent: bool) -> (egui::Color32, egui::Color32) {
+    if on_accent {
+        (egui::Color32::from_white_alpha(46), egui::Color32::WHITE)
+    } else {
+        let v = ui.visuals();
+        (v.widgets.inactive.bg_fill, v.strong_text_color())
+    }
+}
+
+/// Breite der Tastenkappen eines Kürzels bei Höhe `h`.
+pub fn keycaps_width(ui: &egui::Ui, sc: &Shortcut, h: f32) -> f32 {
+    let gap = h * 0.18;
+    let key_w = key_cap_width(ui, &sc.key_label(), h);
+    sc.mods().len() as f32 * (h + gap) + key_w
+}
+
+fn key_cap_width(ui: &egui::Ui, label: &str, h: f32) -> f32 {
+    let tw = ui.fonts_mut(|f| {
+        f.layout_no_wrap(label.to_string(), egui::FontId::proportional(h * 0.58), egui::Color32::WHITE).size().x
+    });
+    (tw + h * 0.6).max(h)
+}
+
+/// Malt die Tastenkappen ab `left_center` nach rechts; gibt die belegte Breite zurück.
+pub fn paint_keycaps(ui: &egui::Ui, left_center: egui::Pos2, sc: &Shortcut, h: f32, on_accent: bool) -> f32 {
+    use egui::{Align2, FontId, Pos2, Rect, Vec2};
+    let (bg, fg) = cap_colors(ui, on_accent);
+    let p = ui.painter();
+    let gap = h * 0.18;
+    let radius = (h * 0.24) as u8;
+    let mut x = left_center.x;
+    for m in sc.mods() {
+        let r = Rect::from_min_size(Pos2::new(x, left_center.y - h / 2.0), Vec2::splat(h));
+        p.rect_filled(r, radius, bg);
+        paint_mod_symbol(p, m, r.center(), h * 0.62, fg);
+        x += h + gap;
+    }
+    let label = sc.key_label();
+    let w = key_cap_width(ui, &label, h);
+    let r = Rect::from_min_size(Pos2::new(x, left_center.y - h / 2.0), Vec2::new(w, h));
+    p.rect_filled(r, radius, bg);
+    p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(h * 0.58), fg);
+    x + w - left_center.x
+}
+
+/// Kürzel als Tastenkappen-Widget (Tooltip mit ausgeschriebenen Tasten).
+pub fn caps_ui(ui: &mut egui::Ui, sc: &Shortcut) -> egui::Response {
+    let h = 24.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(keycaps_width(ui, sc, h), h), egui::Sense::hover());
+    paint_keycaps(ui, rect.left_center(), sc, h, false);
+    resp.on_hover_text(sc.words())
 }
 
 pub struct Hotkeys {

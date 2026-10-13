@@ -165,11 +165,13 @@ fn group_of(t: Tool) -> Option<&'static ToolGroup> {
 }
 
 /// Werkzeugleiste (Mitte der oberen Leiste). Ohne offenes Bild ausgegraut.
-pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>) {
+/// Nur die ersten `visible` Gruppen bekommen einen Button, der Rest landet im „Mehr“-Menü.
+pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>, visible: usize) {
     use crate::ui_kit::{bar_button, bar_separator, Look};
     let enabled = editor.is_some();
     let current = editor.as_ref().map(|e| e.tool);
-    for g in &MAIN_GROUPS {
+    let visible = visible.clamp(1, MAIN_GROUPS.len());
+    for g in &MAIN_GROUPS[..visible] {
         let shown = current
             .filter(|t| g.tools.contains(t))
             .or_else(|| editor.as_ref().and_then(|e| e.group_last.get(g.name).copied()))
@@ -184,12 +186,15 @@ pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>) {
         }
     }
     bar_separator(ui);
-    let more_selected = current.is_some_and(|t| MORE_TOOLS.contains(&t));
-    let icon = current.filter(|t| MORE_TOOLS.contains(t)).map(|t| t.icon()).unwrap_or("⋯");
+    // Mehr-Menü: übergelaufene Gruppen + seltene Werkzeuge
+    let more: Vec<Tool> = MAIN_GROUPS[visible..].iter().flat_map(|g| g.tools.iter().copied()).chain(MORE_TOOLS).collect();
+    let more_selected = current.is_some_and(|t| more.contains(&t));
+    let icon = current.filter(|t| more.contains(t)).map(|t| t.icon()).unwrap_or("⋯");
     let resp = bar_button(ui, icon, "Mehr", Look::Tool { selected: more_selected }, enabled, true);
     egui::Popup::menu(&resp).show(|ui| {
-        for t in MORE_TOOLS {
-            if ui.button(format!("{}  {}   ({})", t.icon(), t.name(), t.key().name())).clicked() {
+        for t in more {
+            let label = format!("{}  {}   ({})", t.icon(), t.name(), t.key().name());
+            if ui.add_enabled(enabled, egui::Button::selectable(current == Some(t), label)).clicked() {
                 if let Some(e) = editor.as_deref_mut() {
                     e.set_tool(t);
                 }
@@ -199,10 +204,19 @@ pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>) {
     });
 }
 
-/// Breite der Werkzeugleiste (für die Zentrierung).
-pub fn tool_bar_width(ui: &Ui) -> f32 {
-    let n = MAIN_GROUPS.len() as f32 + 1.0;
-    n * crate::ui_kit::TOOL_WIDTH + n * ui.spacing().item_spacing.x + 13.0 + 20.0
+/// Breite der Werkzeugleiste mit `visible` Gruppen (für Zentrierung und Platzberechnung).
+pub fn tool_bar_width(ui: &Ui, visible: usize, compact: bool) -> f32 {
+    use crate::ui_kit::bar_button_width;
+    let gap = ui.spacing().item_spacing.x;
+    let groups: f32 = MAIN_GROUPS[..visible.clamp(1, MAIN_GROUPS.len())]
+        .iter()
+        .map(|g| bar_button_width(ui, g.name, false, compact) + gap)
+        .sum();
+    groups + 13.0 + gap + bar_button_width(ui, "Mehr", true, compact)
+}
+
+pub fn tool_group_count() -> usize {
+    MAIN_GROUPS.len()
 }
 
 #[derive(Clone)]

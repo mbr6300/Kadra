@@ -58,6 +58,24 @@ pub struct SnapApp {
     show_background_hint: bool,
 }
 
+const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗔", "🖵", "🖥"];
+
+/// Mindestabstand zwischen den drei Gruppen der oberen Leiste.
+const TOOLBAR_GAP: f32 = 16.0;
+const RIGHT_SPACING: f32 = 4.0;
+
+/// Ergebnis der Platzberechnung für die obere Leiste.
+struct ToolbarLayout {
+    /// Linke/rechte Gruppe nur als Symbol.
+    compact_sides: bool,
+    /// Werkzeuge nur als Symbol.
+    compact_tools: bool,
+    /// Anzahl Werkzeuggruppen mit eigenem Button (Rest im „Mehr“-Menü).
+    visible_groups: usize,
+    /// Breite der rechten Gruppe.
+    right_w: f32,
+}
+
 /// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ als Ersatz anhängen (fehlen in den egui-Schriften).
 fn install_symbol_font(ctx: &egui::Context) {
     let Ok(bytes) = std::fs::read("/System/Library/Fonts/Apple Symbols.ttf") else { return };
@@ -506,9 +524,11 @@ impl SnapApp {
     fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let full = ui.max_rect();
         let tool = Look::Tool { selected: false };
+        let layout = self.toolbar_layout(ui, full.width());
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(4.0);
+            ui_kit::set_compact(ctx, layout.compact_sides);
             let resp = bar_button(ui, "⏺", "Aufnahme", Look::Primary, true, true).on_hover_text("Aufnahmemodus wählen");
             egui::Popup::menu(&resp).show(|ui| self.capture_menu(ctx, ui));
             if bar_button(ui, "📂", "Öffnen", tool, true, false).on_hover_text("Bild öffnen (⌘O)").clicked() {
@@ -530,13 +550,18 @@ impl SnapApp {
                 }
             }
 
-            // Werkzeuge mittig ausrichten
-            let start = (full.center().x - editor::tool_bar_width(ui) / 2.0).max(ui.cursor().min.x + 16.0);
+            // Werkzeuge mittig, aber nie in die rechte Gruppe hinein
+            let tools_w = editor::tool_bar_width(ui, layout.visible_groups, layout.compact_tools);
+            let left_end = ui.cursor().min.x + TOOLBAR_GAP;
+            let right_start = full.max.x - layout.right_w - TOOLBAR_GAP;
+            let start = (full.center().x - tools_w / 2.0).min(right_start - tools_w).max(left_end);
             ui.add_space(start - ui.cursor().min.x);
-            editor::tool_bar(ui, self.editor.as_mut());
+            ui_kit::set_compact(ctx, layout.compact_tools);
+            editor::tool_bar(ui, self.editor.as_mut(), layout.visible_groups);
+            ui_kit::set_compact(ctx, layout.compact_sides);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().item_spacing.x = RIGHT_SPACING;
                 ui.add_space(4.0);
                 if bar_button(ui, "⚙", "Einstellungen", tool, true, false).clicked() {
                     self.show_settings = true;
@@ -574,14 +599,48 @@ impl SnapApp {
                 }
             });
         });
+        ui_kit::set_compact(ctx, false);
+    }
+
+    /// Wählt die Darstellung der Leiste so, dass sich nichts überschneidet:
+    /// 1. alles beschriftet, 2. Werkzeuge nur Symbol, 3. alles nur Symbol,
+    /// 4. zusätzlich Werkzeuggruppen ins „Mehr“-Menü verschieben.
+    fn toolbar_layout(&self, ui: &egui::Ui, width: f32) -> ToolbarLayout {
+        use ui_kit::bar_button_width as bw;
+        let left_w = |c: bool| {
+            let items = [("Aufnahme", true), ("Öffnen", false), ("Einfügen", false), ("Zurück", false), ("Vor", false)];
+            4.0 + 13.0 + items.iter().map(|(l, m)| bw(ui, l, *m, c) + 2.0).sum::<f32>() + 2.0
+        };
+        let right_w = |c: bool| {
+            let items = [("Einstellungen", false), ("Speichern", true), ("Kopieren", false)];
+            4.0 + items.iter().map(|(l, m)| bw(ui, l, *m, c) + RIGHT_SPACING).sum::<f32>()
+        };
+        let all = editor::tool_group_count();
+        let fits = |sides: bool, tools: bool, n: usize| {
+            left_w(sides) + right_w(sides) + editor::tool_bar_width(ui, n, tools) + 2.0 * TOOLBAR_GAP <= width
+        };
+        for (sides, tools) in [(false, false), (false, true), (true, true)] {
+            if fits(sides, tools, all) {
+                return ToolbarLayout { compact_sides: sides, compact_tools: tools, visible_groups: all, right_w: right_w(sides) };
+            }
+        }
+        let visible = (1..all).rev().find(|n| fits(true, true, *n)).unwrap_or(1);
+        ToolbarLayout { compact_sides: true, compact_tools: true, visible_groups: visible, right_w: right_w(true) }
     }
 
     fn capture_menu(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.set_min_width(240.0);
+        ui.set_min_width(280.0);
         for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
-            let icon = ["⛶", "🗔", "🖵", "🖥"][i];
-            let btn = egui::Button::new(format!("{icon}  {}", kind.label())).shortcut_text(self.shortcut_text(i).unwrap_or_default());
-            if ui.add(btn).clicked() {
+            let btn = egui::Button::new(format!("{}  {}", CAPTURE_ICONS[i], kind.label()))
+                .min_size(Vec2::new(ui.available_width(), 32.0));
+            let resp = ui.add(btn);
+            // Tastenkappen rechtsbündig über den Button malen
+            if let Some(sc) = self.active_shortcut(i) {
+                let h = 22.0;
+                let w = hotkeys::keycaps_width(ui, sc, h);
+                hotkeys::paint_keycaps(ui, resp.rect.right_center() - Vec2::new(10.0 + w, 0.0), sc, h, false);
+            }
+            if resp.clicked() {
                 ui.close();
                 self.start_capture(ctx, kind);
             }
@@ -659,6 +718,37 @@ impl SnapApp {
         }
     }
 
+    /// Großer Aufnahme-Button der Startseite: Symbol + Name links, Tastenkappen rechts.
+    fn capture_button(&self, ui: &mut egui::Ui, i: usize, kind: CaptureKind) -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(340.0, 50.0), egui::Sense::click());
+        let primary = i == 0;
+        let v = ui.visuals();
+        let bg = match (primary, resp.hovered()) {
+            (true, false) => ORANGE,
+            (true, true) => ui_kit::ORANGE_HOVER,
+            (false, false) => v.widgets.inactive.weak_bg_fill,
+            (false, true) => v.widgets.hovered.weak_bg_fill,
+        };
+        let fg = if primary { Color32::WHITE } else { v.strong_text_color() };
+        let p = ui.painter();
+        p.rect_filled(rect, 10.0, bg);
+        let icon = CAPTURE_ICONS[i];
+        p.text(rect.left_center() + Vec2::new(22.0, 0.0), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(20.0), fg);
+        p.text(rect.left_center() + Vec2::new(44.0, 0.0), egui::Align2::LEFT_CENTER, kind.label(), egui::FontId::proportional(17.0), fg);
+        if let Some(sc) = self.active_shortcut(i) {
+            let h = 26.0;
+            let w = hotkeys::keycaps_width(ui, sc, h);
+            hotkeys::paint_keycaps(ui, rect.right_center() - Vec2::new(14.0 + w, 0.0), sc, h, primary);
+            resp.on_hover_text(format!("{} aufnehmen ({})", kind.label(), sc.words()))
+        } else {
+            resp
+        }
+    }
+
+    fn active_shortcut(&self, i: usize) -> Option<&Shortcut> {
+        self.settings.hotkeys.then(|| self.settings.shortcuts[i].as_ref()).flatten()
+    }
+
     fn welcome(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.2);
@@ -666,11 +756,7 @@ impl SnapApp {
             ui.label("Bildschirmfotos aufnehmen, beschriften und teilen.");
             ui.add_space(24.0);
             for (i, kind) in CaptureKind::ALL.into_iter().enumerate() {
-                let hk = self.shortcut_text(i).unwrap_or_default();
-                let txt = RichText::new(format!("{}   {hk}", kind.label())).size(18.0);
-                let btn = egui::Button::new(txt).min_size(Vec2::new(260.0, 44.0));
-                let btn = if i == 0 { btn.fill(ORANGE) } else { btn };
-                if ui.add(btn).clicked() {
+                if self.capture_button(ui, i, kind).clicked() {
                     self.start_capture(ctx, kind);
                 }
             }

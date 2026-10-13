@@ -23,7 +23,7 @@ fn main() -> eframe::Result {
             .with_app_id("ch.snapit.app")
             .with_icon(std::sync::Arc::new(app_icon))
             .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([200.0, 150.0])
+            .with_min_inner_size([560.0, 420.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };

@@ -24,12 +24,46 @@ pub enum Look {
     Primary,
 }
 
-/// Button mit Symbol oben und Beschriftung darunter.
+/// Breite eines kompakten Leisten-Buttons (nur Symbol).
+pub const COMPACT_WIDTH: f32 = 40.0;
+
+fn compact_id() -> egui::Id {
+    egui::Id::new("snapit_bar_compact")
+}
+
+/// Leisten-Buttons ab jetzt nur als Symbol (Beschriftung als Tooltip) zeichnen.
+pub fn set_compact(ctx: &egui::Context, compact: bool) {
+    ctx.data_mut(|d| d.insert_temp(compact_id(), compact));
+}
+
+fn is_compact(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp(compact_id())).unwrap_or(false)
+}
+
+fn label_text(label: &str, menu: bool) -> String {
+    if menu { format!("{label} ▾") } else { label.to_string() }
+}
+
+/// Breite, die `bar_button` belegen wird.
+pub fn bar_button_width(ui: &Ui, label: &str, menu: bool, compact: bool) -> f32 {
+    if compact {
+        return COMPACT_WIDTH;
+    }
+    let label_w = ui.fonts_mut(|f| {
+        f.layout_no_wrap(label_text(label, menu), FontId::proportional(11.5), Color32::WHITE).size().x
+    });
+    TOOL_WIDTH.max(label_w + 14.0)
+}
+
+/// Button mit Symbol oben und Beschriftung darunter (kompakt: nur Symbol).
 pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: bool, menu: bool) -> Response {
-    let label_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), FontId::proportional(11.5), Color32::WHITE).size().x);
-    let size = Vec2::new(TOOL_WIDTH.max(label_w + 14.0), 52.0);
+    let compact = is_compact(ui.ctx());
+    let size = Vec2::new(bar_button_width(ui, label, menu, compact), 52.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
+    if compact {
+        resp = resp.on_hover_text(label_text(label, false));
+    }
     if !ui.is_rect_visible(rect) {
         return resp;
     }
@@ -66,9 +100,15 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
     if let Look::Tool { selected: true } = look {
         p.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, accent.gamma_multiply(0.6)), StrokeKind::Inside);
     }
-    p.text(rect.center_top() + Vec2::new(0.0, 19.0), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
-    let text = if menu { format!("{label} ▾") } else { label.to_string() };
-    p.text(rect.center_bottom() - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, text, FontId::proportional(11.5), fg);
+    if compact {
+        p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
+        if menu {
+            p.text(rect.center_bottom() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, "▾", FontId::proportional(10.0), fg);
+        }
+    } else {
+        p.text(rect.center_top() + Vec2::new(0.0, 19.0), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
+        p.text(rect.center_bottom() - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, label_text(label, menu), FontId::proportional(11.5), fg);
+    }
     resp
 }
 
