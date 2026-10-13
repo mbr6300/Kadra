@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Id, Key, Painter, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind,
+    Align2, Color32, CornerRadius, FontId, Id, Key, Painter, PointerButton, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
     TextureHandle, TextureOptions, Ui, Vec2,
 };
 use image::{imageops, RgbaImage};
@@ -216,7 +216,8 @@ enum Drag {
     Create { ann: Annotation, start: Pos2 },
     Move { idx: usize, last: Pos2 },
     Handle { idx: usize, handle: usize },
-    Crop { start: Pos2 },
+    /// Zuschneiderahmen: `grip` = Kante/Ecke (−1/0/1 je Achse), `None` = verschieben.
+    Crop { grip: Option<(i8, i8)>, orig: Rect, start: Pos2 },
 }
 
 pub struct Editor {
@@ -238,6 +239,8 @@ pub struct Editor {
     editing_text: Option<usize>,
     focus_text: bool,
     crop: Option<Rect>,
+    /// Festes Seitenverhältnis (Breite/Höhe) für den Zuschneiderahmen.
+    crop_aspect: Option<f32>,
     pub dirty: bool,
     pub image_changed: bool,
     pub last_change: Instant,
@@ -283,6 +286,7 @@ impl Editor {
             editing_text: None,
             focus_text: false,
             crop: None,
+            crop_aspect: None,
             dirty: false,
             image_changed: false,
             last_change: Instant::now(),
@@ -310,6 +314,10 @@ impl Editor {
         self.doc.effects = s.effects;
         self.selected = None;
         self.editing_text = None;
+        if self.tool == Tool::Crop {
+            self.crop = Some(self.full_rect());
+            self.crop_aspect = None;
+        }
         self.changed();
     }
 
@@ -380,10 +388,36 @@ impl Editor {
         if let Some(g) = group_of(t) {
             self.group_last.insert(g.name, t);
         }
-        self.crop = None;
+        // Zuschneiden startet mit einem Rahmen um das ganze Bild.
+        self.crop = (t == Tool::Crop).then(|| self.full_rect());
+        self.crop_aspect = None;
         if t != Tool::Select {
             self.selected = None;
         }
+    }
+
+    fn full_rect(&self) -> Rect {
+        Rect::from_min_size(Pos2::ZERO, self.doc.size())
+    }
+
+    pub fn cancel_crop(&mut self) {
+        self.crop = None;
+        self.crop_aspect = None;
+        self.tool = Tool::Select;
+    }
+
+    /// Rahmen auf festes Seitenverhältnis setzen (größtmöglich, zentriert); `None` = frei.
+    fn set_crop_aspect(&mut self, aspect: Option<f32>) {
+        self.crop_aspect = aspect;
+        let Some(a) = aspect else { return };
+        let s = self.doc.size();
+        let size = if s.x / s.y > a { Vec2::new(s.y * a, s.y) } else { Vec2::new(s.x, s.x / a) };
+        let r = Rect::from_center_size(self.full_rect().center(), size);
+        self.crop = Some(Rect::from_min_max(r.min.round(), r.max.round()));
+    }
+
+    fn crop_changed(&self) -> bool {
+        self.crop.is_some_and(|c| c != self.full_rect())
     }
 
     // ---------- Bildoperationen ----------
@@ -396,12 +430,14 @@ impl Editor {
     }
 
     pub fn apply_crop(&mut self) {
+        let unchanged = !self.crop_changed();
         let Some(r) = self.crop.take() else { return };
-        let bounds = Rect::from_min_size(Pos2::ZERO, self.doc.size());
-        let r = r.intersect(bounds);
+        self.crop_aspect = None;
+        self.tool = Tool::Select;
+        let r = r.intersect(self.full_rect());
         let (x, y) = (r.min.x.round() as u32, r.min.y.round() as u32);
         let (w, h) = (r.width().round() as u32, r.height().round() as u32);
-        if w < 2 || h < 2 {
+        if unchanged || w < 2 || h < 2 {
             return;
         }
         self.push_undo();
@@ -410,7 +446,6 @@ impl Editor {
             a.shape.translate(Vec2::new(-(x as f32), -(y as f32)));
         }
         self.set_image(img);
-        self.tool = Tool::Select;
     }
 
     pub fn rotate(&mut self, clockwise: bool) {
@@ -519,14 +554,38 @@ impl Editor {
         ui.separator();
 
         if kind == Tool::Crop {
-            ui.label("Bereich im Bild aufziehen, dann mit Enter oder dem Button übernehmen.");
-            ui.add_enabled_ui(self.crop.is_some(), |ui| {
-                if ui.button("✔ Zuschneiden").clicked() {
-                    self.apply_crop();
+            ui.label("Rahmen an Ecken und Kanten verkleinern oder im Inneren verschieben. ⇧ an einer Ecke hält das Seitenverhältnis.");
+            if let Some(r) = self.crop {
+                ui.label(RichText::new(format!("{} × {} px", r.width().round(), r.height().round())).strong());
+            }
+            ui.add_space(4.0);
+            ui.label("Format");
+            ui.horizontal_wrapped(|ui| {
+                let s = self.doc.size();
+                let presets = [("Frei", None), ("Original", Some(s.x / s.y)), ("1:1", Some(1.0)), ("4:3", Some(4.0 / 3.0)), ("16:9", Some(16.0 / 9.0))];
+                for (label, aspect) in presets {
+                    let active = match (self.crop_aspect, aspect) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => (a - b).abs() < 0.001,
+                        _ => false,
+                    };
+                    if ui.selectable_label(active, label).clicked() {
+                        self.set_crop_aspect(aspect);
+                    }
                 }
             });
-            if let Some(r) = self.crop {
-                ui.label(format!("{} × {} px", r.width().round(), r.height().round()));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if crate::ui_kit::primary_button(ui, "✔ Zuschneiden", self.crop_changed()).clicked() {
+                    self.apply_crop();
+                }
+                if ui.add(egui::Button::new("Abbrechen").min_size(crate::ui_kit::DIALOG_BUTTON)).clicked() {
+                    self.cancel_crop();
+                }
+            });
+            if ui.add_enabled(self.crop_changed(), egui::Button::new("Rahmen zurücksetzen")).clicked() {
+                self.crop = Some(self.full_rect());
+                self.crop_aspect = None;
             }
         } else if kind != Tool::Select {
             let original = sel.map(|i| self.doc.annotations[i].style.clone()).unwrap_or_else(|| self.styles[&kind].clone());
@@ -660,7 +719,9 @@ impl Editor {
         }
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.selected = None;
-            self.crop = None;
+            if self.tool == Tool::Crop {
+                self.cancel_crop();
+            }
         }
         if ctx.input(|i| i.key_pressed(Key::Enter)) && self.crop.is_some() {
             self.apply_crop();
@@ -792,7 +853,11 @@ impl Editor {
                         None
                     }
                 }
-                Tool::Crop => Some(Drag::Crop { start }),
+                Tool::Crop => self.crop.and_then(|c| {
+                    let cr = Rect::from_min_max(to_scr(c.min), to_scr(c.max));
+                    crop_grip(cr, to_scr(start), self.crop_aspect.is_some())
+                        .map(|grip| Drag::Crop { grip, orig: c, start })
+                }),
                 Tool::Text | Tool::Step | Tool::Fill => None,
                 t => {
                     let shape = new_shape(t, p(start));
@@ -817,11 +882,10 @@ impl Editor {
                             a.shape.set_handle(*handle, cur);
                         }
                     }
-                    Drag::Crop { start } => {
-                        let b = Rect::from_min_size(Pos2::ZERO, size);
-                        let mut r = Rect::from_two_pos(*start, cur).intersect(b);
-                        r = Rect::from_min_max(r.min.round(), r.max.round());
-                        self.crop = Some(r);
+                    Drag::Crop { grip, orig, start } => {
+                        let bounds = Rect::from_min_size(Pos2::ZERO, size);
+                        let aspect = self.crop_aspect.or(shift.then(|| orig.width() / orig.height()));
+                        self.crop = Some(drag_crop(*orig, *grip, cur - *start, bounds, aspect));
                     }
                 }
             }
@@ -907,6 +971,22 @@ impl Editor {
                     }
                 }
                 Tool::Text => egui::CursorIcon::Text,
+                Tool::Crop => {
+                    let grip = match &self.drag {
+                        Some(Drag::Crop { grip, .. }) => Some(*grip),
+                        _ => self.crop.zip(pointer).and_then(|(c, ptr)| {
+                            crop_grip(Rect::from_min_max(to_scr(c.min), to_scr(c.max)), ptr, self.crop_aspect.is_some())
+                        }),
+                    };
+                    match grip {
+                        Some(None) => egui::CursorIcon::Move,
+                        Some(Some((x, y))) if x == y => egui::CursorIcon::ResizeNwSe,
+                        Some(Some((x, y))) if x == -y => egui::CursorIcon::ResizeNeSw,
+                        Some(Some((_, 0))) => egui::CursorIcon::ResizeHorizontal,
+                        Some(Some(_)) => egui::CursorIcon::ResizeVertical,
+                        None => egui::CursorIcon::Default,
+                    }
+                }
                 _ => egui::CursorIcon::Crosshair,
             };
             ctx.set_cursor_icon(icon);
@@ -988,7 +1068,7 @@ impl Editor {
             }
         }
 
-        // Zuschneiden
+        // Zuschneiden: Rahmen mit Griffen + Bestätigungsleiste
         if let Some(c) = self.crop {
             let cr = Rect::from_min_max(to_scr(c.min), to_scr(c.max));
             let dim = Color32::from_black_alpha(150);
@@ -997,14 +1077,67 @@ impl Editor {
             clip.rect_filled(Rect::from_min_max(Pos2::new(o.min.x, cr.max.y), o.max), 0.0, dim);
             clip.rect_filled(Rect::from_min_max(Pos2::new(o.min.x, cr.min.y), Pos2::new(cr.min.x, cr.max.y)), 0.0, dim);
             clip.rect_filled(Rect::from_min_max(Pos2::new(cr.max.x, cr.min.y), Pos2::new(o.max.x, cr.max.y)), 0.0, dim);
+            // Drittel-Linien während der Bearbeitung
+            if matches!(self.drag, Some(Drag::Crop { .. })) {
+                let thin = Stroke::new(1.0, Color32::from_white_alpha(90));
+                for f in [1.0 / 3.0, 2.0 / 3.0] {
+                    let x = cr.min.x + cr.width() * f;
+                    let y = cr.min.y + cr.height() * f;
+                    clip.line_segment([Pos2::new(x, cr.min.y), Pos2::new(x, cr.max.y)], thin);
+                    clip.line_segment([Pos2::new(cr.min.x, y), Pos2::new(cr.max.x, y)], thin);
+                }
+            }
             clip.rect_stroke(cr, 0.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
-            clip.text(
-                cr.left_top() + Vec2::new(4.0, -4.0),
-                Align2::LEFT_BOTTOM,
-                format!("{} × {}  (Enter = übernehmen)", c.width(), c.height()),
-                FontId::proportional(13.0),
-                Color32::WHITE,
-            );
+            // Eck-Griffe als L-Form, Kanten-Griffe als Balken
+            let grip = Stroke::new(4.0, Color32::WHITE);
+            let arm = 18.0f32.min(cr.width() / 3.0).min(cr.height() / 3.0);
+            for (corner, dx, dy) in [
+                (cr.left_top(), 1.0, 1.0),
+                (cr.right_top(), -1.0, 1.0),
+                (cr.left_bottom(), 1.0, -1.0),
+                (cr.right_bottom(), -1.0, -1.0),
+            ] {
+                clip.line_segment([corner, corner + Vec2::new(dx * arm, 0.0)], grip);
+                clip.line_segment([corner, corner + Vec2::new(0.0, dy * arm)], grip);
+            }
+            if self.crop_aspect.is_none() {
+                let half = arm * 0.7;
+                let (cx, cy) = (cr.center().x, cr.center().y);
+                clip.line_segment([Pos2::new(cx - half, cr.min.y), Pos2::new(cx + half, cr.min.y)], grip);
+                clip.line_segment([Pos2::new(cx - half, cr.max.y), Pos2::new(cx + half, cr.max.y)], grip);
+                clip.line_segment([Pos2::new(cr.min.x, cy - half), Pos2::new(cr.min.x, cy + half)], grip);
+                clip.line_segment([Pos2::new(cr.max.x, cy - half), Pos2::new(cr.max.x, cy + half)], grip);
+            }
+
+            // Leiste unter dem Rahmen (oder darin, wenn unten kein Platz ist)
+            let below = cr.max.y + 56.0 < avail.max.y;
+            let (anchor, pivot) = if below {
+                (Pos2::new(cr.center().x, cr.max.y + 12.0), Align2::CENTER_TOP)
+            } else {
+                (Pos2::new(cr.center().x, cr.max.y - 12.0), Align2::CENTER_BOTTOM)
+            };
+            let (mut apply, mut cancel) = (false, false);
+            egui::Area::new(Id::new("snapit_crop_bar"))
+                .order(egui::Order::Foreground)
+                .pivot(pivot)
+                .fixed_pos(anchor)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{} × {} px", c.width(), c.height())).monospace());
+                            ui.add_space(6.0);
+                            cancel = ui.add(egui::Button::new("Abbrechen")).on_hover_text("Esc").clicked();
+                            apply = crate::ui_kit::primary_button(ui, "✔ Zuschneiden", self.crop_changed())
+                                .on_hover_text("Enter")
+                                .clicked();
+                        });
+                    });
+                });
+            if apply {
+                self.apply_crop();
+            } else if cancel {
+                self.cancel_crop();
+            }
         }
 
         // Texteingabe
@@ -1051,6 +1184,116 @@ impl Editor {
 }
 
 // ---------- Hilfsfunktionen ----------
+
+/// Welcher Griff des Zuschneiderahmens liegt unter `p` (Bildschirmkoordinaten)?
+/// `Some(None)` = im Rahmen (verschieben), `Some(Some((x, y)))` = Kante/Ecke.
+fn crop_grip(cr: Rect, p: Pos2, aspect_locked: bool) -> Option<Option<(i8, i8)>> {
+    const TOL: f32 = 10.0;
+    let near = |a: f32, b: f32| (a - b).abs() <= TOL;
+    let in_x = p.x >= cr.min.x - TOL && p.x <= cr.max.x + TOL;
+    let in_y = p.y >= cr.min.y - TOL && p.y <= cr.max.y + TOL;
+    let gx = if near(p.x, cr.min.x) { -1 } else if near(p.x, cr.max.x) { 1 } else { 0 };
+    let gy = if near(p.y, cr.min.y) { -1 } else if near(p.y, cr.max.y) { 1 } else { 0 };
+    if in_x && in_y && (gx != 0 || gy != 0) {
+        let corner = gx != 0 && gy != 0;
+        if corner || !aspect_locked {
+            return Some(Some((gx, gy)));
+        }
+    }
+    // Innen (inkl. Toleranzsaum, z. B. Kante bei festem Format) = verschieben
+    (in_x && in_y).then_some(None)
+}
+
+/// Neuer Rahmen nach Ziehen um `d` (Bildpixel), innerhalb `bounds`, optional mit Seitenverhältnis.
+fn drag_crop(orig: Rect, grip: Option<(i8, i8)>, d: Vec2, bounds: Rect, aspect: Option<f32>) -> Rect {
+    const MIN: f32 = 8.0;
+    let r = match grip {
+        None => {
+            let dx = d.x.clamp(bounds.min.x - orig.min.x, bounds.max.x - orig.max.x);
+            let dy = d.y.clamp(bounds.min.y - orig.min.y, bounds.max.y - orig.max.y);
+            orig.translate(Vec2::new(dx, dy))
+        }
+        Some((gx, gy)) => {
+            let mut r = orig;
+            match gx {
+                -1 => r.min.x = (orig.min.x + d.x).clamp(bounds.min.x, orig.max.x - MIN),
+                1 => r.max.x = (orig.max.x + d.x).clamp(orig.min.x + MIN, bounds.max.x),
+                _ => {}
+            }
+            match gy {
+                -1 => r.min.y = (orig.min.y + d.y).clamp(bounds.min.y, orig.max.y - MIN),
+                1 => r.max.y = (orig.max.y + d.y).clamp(orig.min.y + MIN, bounds.max.y),
+                _ => {}
+            }
+            match aspect {
+                Some(a) if gx != 0 && gy != 0 => fit_aspect(r, gx, gy, a, bounds),
+                _ => r,
+            }
+        }
+    };
+    Rect::from_min_max(r.min.round(), r.max.round())
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+
+    fn r(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+        Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+    }
+
+    #[test]
+    fn grips_are_detected() {
+        let cr = r(100.0, 100.0, 300.0, 200.0);
+        assert_eq!(crop_grip(cr, Pos2::new(102.0, 98.0), false), Some(Some((-1, -1))), "Ecke oben links");
+        assert_eq!(crop_grip(cr, Pos2::new(200.0, 201.0), false), Some(Some((0, 1))), "Kante unten");
+        assert_eq!(crop_grip(cr, Pos2::new(200.0, 150.0), false), Some(None), "innen = verschieben");
+        assert_eq!(crop_grip(cr, Pos2::new(50.0, 50.0), false), None, "außerhalb");
+        assert_eq!(crop_grip(cr, Pos2::new(200.0, 201.0), true), Some(None), "Kanten bei festem Format gesperrt");
+    }
+
+    #[test]
+    fn drag_respects_bounds_and_min_size() {
+        let bounds = r(0.0, 0.0, 400.0, 300.0);
+        let orig = r(50.0, 50.0, 350.0, 250.0);
+        // Verschieben über den Rand hinaus wird begrenzt
+        assert_eq!(drag_crop(orig, None, Vec2::new(500.0, -500.0), bounds, None), r(100.0, 0.0, 400.0, 200.0));
+        // Linke Kante über die rechte hinaus: Mindestbreite bleibt
+        let shrunk = drag_crop(orig, Some((-1, 0)), Vec2::new(1000.0, 0.0), bounds, None);
+        assert_eq!(shrunk.width(), 8.0);
+        // Ecke nach außen: an Bildgrenze gestoppt
+        assert_eq!(drag_crop(orig, Some((1, 1)), Vec2::new(999.0, 999.0), bounds, None), r(50.0, 50.0, 400.0, 300.0));
+    }
+
+    #[test]
+    fn corner_keeps_aspect() {
+        let bounds = r(0.0, 0.0, 1000.0, 1000.0);
+        let orig = r(100.0, 100.0, 300.0, 200.0); // 2:1
+        let out = drag_crop(orig, Some((1, 1)), Vec2::new(100.0, 10.0), bounds, Some(2.0));
+        assert_eq!(out.min, orig.min, "gegenüberliegende Ecke bleibt fest");
+        assert!((out.width() / out.height() - 2.0).abs() < 0.02, "{out:?}");
+    }
+}
+
+/// Rahmen auf Seitenverhältnis `a` bringen; die dem Griff gegenüberliegende Ecke bleibt fest.
+fn fit_aspect(r: Rect, gx: i8, gy: i8, a: f32, bounds: Rect) -> Rect {
+    let anchor = Pos2::new(if gx < 0 { r.max.x } else { r.min.x }, if gy < 0 { r.max.y } else { r.min.y });
+    // Platz bis zum Bildrand in Zugrichtung
+    let max_w = if gx < 0 { anchor.x - bounds.min.x } else { bounds.max.x - anchor.x };
+    let max_h = if gy < 0 { anchor.y - bounds.min.y } else { bounds.max.y - anchor.y };
+    let mut w = r.width().max(r.height() * a);
+    let mut h = w / a;
+    if w > max_w {
+        w = max_w;
+        h = w / a;
+    }
+    if h > max_h {
+        h = max_h;
+        w = h * a;
+    }
+    let corner = anchor + Vec2::new(gx as f32 * w, gy as f32 * h);
+    Rect::from_two_pos(anchor, corner)
+}
 
 fn new_shape(t: Tool, a: P) -> Shape {
     match t {
