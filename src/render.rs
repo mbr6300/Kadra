@@ -1,6 +1,8 @@
 //! Rastert ein Dokument in ein flaches Bild (Export, Zwischenablage, Thumbnails).
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use std::sync::OnceLock;
+
+use ab_glyph::{Font, FontArc, GlyphId, PxScale, ScaleFont};
 use image::{imageops, Rgba as Px, RgbaImage};
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform,
@@ -8,8 +10,43 @@ use tiny_skia::{
 
 use crate::doc::{rect, Annotation, Document, Effects, Rgba, Shape, P};
 
-pub fn font() -> FontRef<'static> {
-    FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT).expect("Schrift")
+/// Schrift mit Skalierung (wie egui-`FontTweak::scale`).
+struct Face {
+    font: FontArc,
+    scale: f32,
+}
+
+/// Dieselbe Schriftkette wie im Editor (egui-Standard + Apple Symbols), damit Emoji und
+/// Sonderzeichen beim Export nicht fehlen. Erste Schrift mit passendem Glyph gewinnt.
+fn faces() -> &'static [Face] {
+    static FACES: OnceLock<Vec<Face>> = OnceLock::new();
+    FACES.get_or_init(|| {
+        let stat = |bytes: &'static [u8], scale: f32| FontArc::try_from_slice(bytes).ok().map(|font| Face { font, scale });
+        let mut v: Vec<Face> = [
+            stat(epaint_default_fonts::UBUNTU_LIGHT, 1.0),
+            stat(epaint_default_fonts::NOTO_EMOJI_REGULAR, 0.81),
+            stat(epaint_default_fonts::EMOJI_ICON, 0.90),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if let Some(font) = std::fs::read(crate::SYMBOL_FONT_PATH).ok().and_then(|b| FontArc::try_from_vec(b).ok()) {
+            v.push(Face { font, scale: 1.0 });
+        }
+        v
+    })
+}
+
+/// Schrift für ein Zeichen (Fallback: Hauptschrift, zeigt dann das Ersatzzeichen).
+fn face_for(ch: char) -> &'static Face {
+    let all = faces();
+    all.iter().find(|f| f.font.glyph_id(ch).0 != 0).unwrap_or(&all[0])
+}
+
+/// Pixelgröße wie egui: `size` = Em-Größe; Zeilenhöhe der Schrift entspricht `size`.
+fn px_scale(face: &Face, size: f32) -> PxScale {
+    let f = &face.font;
+    PxScale::from(size * face.scale * f.height_unscaled() / f.units_per_em().unwrap_or(1000.0))
 }
 
 /// Pfeilspitze: Länge abhängig von der Strichstärke.
@@ -55,10 +92,10 @@ pub fn apply_effects(base: &RgbaImage, anns: &[Annotation]) -> RgbaImage {
         let (w, h) = (x1 - x0, y1 - y0);
         let sub = imageops::crop_imm(&img, x0, y0, w, h).to_image();
         let out = if blur {
-            let sigma = (a.style.width * 2.0).max(4.0);
+            let sigma = (a.style.width * 2.0).max(6.0);
             imageops::fast_blur(&sub, sigma)
         } else {
-            pixelate(&sub, (a.style.width * 3.0).max(6.0) as u32)
+            pixelate(&sub, (a.style.width * 3.0).max(10.0) as u32)
         };
         imageops::replace(&mut img, &out, x0 as i64, y0 as i64);
     }
@@ -207,24 +244,27 @@ fn poly_path(pts: &[P], close: bool) -> Option<Path> {
 
 /// Zeichnet Text mit ab_glyph; `size` = Em-Größe in Pixeln (wie egui).
 pub fn draw_text(pm: &mut Pixmap, x: f32, y: f32, text: &str, size: f32, color: Rgba) {
-    let f = font();
-    let px = PxScale::from(size * f.height_unscaled() / f.units_per_em().unwrap_or(1000.0));
-    let sf = f.as_scaled(px);
+    let main = &faces()[0];
+    let sf = main.font.as_scaled(px_scale(main, size));
     let line_h = sf.height() + sf.line_gap();
     let (w, h) = (pm.width() as i32, pm.height() as i32);
     let data = pm.data_mut();
     for (li, line) in text.lines().enumerate() {
         let mut caret = ab_glyph::point(x, y + sf.ascent() + li as f32 * line_h);
-        let mut prev = None;
+        let mut prev: Option<(*const Face, GlyphId)> = None;
         for ch in line.chars() {
-            let gid = f.glyph_id(ch);
-            if let Some(pg) = prev {
-                caret.x += sf.kern(pg, gid);
+            let face = face_for(ch);
+            let px = px_scale(face, size);
+            let fs = face.font.as_scaled(px);
+            let gid = face.font.glyph_id(ch);
+            // Unterschneidung nur innerhalb derselben Schrift
+            if let Some((_, pg)) = prev.filter(|(pf, _)| std::ptr::eq(*pf, face)) {
+                caret.x += fs.kern(pg, gid);
             }
             let glyph = gid.with_scale_and_position(px, caret);
-            caret.x += sf.h_advance(gid);
-            prev = Some(gid);
-            let Some(og) = f.outline_glyph(glyph) else { continue };
+            caret.x += fs.h_advance(gid);
+            prev = Some((face as *const Face, gid));
+            let Some(og) = face.font.outline_glyph(glyph) else { continue };
             let bb = og.px_bounds();
             og.draw(|gx, gy, cov| {
                 let (ix, iy) = (bb.min.x as i32 + gx as i32, bb.min.y as i32 + gy as i32);
@@ -244,14 +284,19 @@ pub fn draw_text(pm: &mut Pixmap, x: f32, y: f32, text: &str, size: f32, color: 
 }
 
 pub fn text_size(text: &str, size: f32) -> (f32, f32) {
-    let f = font();
-    let px = PxScale::from(size * f.height_unscaled() / f.units_per_em().unwrap_or(1000.0));
-    let sf = f.as_scaled(px);
+    let main = &faces()[0];
+    let sf = main.font.as_scaled(px_scale(main, size));
     let mut maxw: f32 = 0.0;
     let mut n = 0;
     for line in text.lines() {
         n += 1;
-        let w: f32 = line.chars().map(|c| sf.h_advance(f.glyph_id(c))).sum();
+        let w: f32 = line
+            .chars()
+            .map(|c| {
+                let face = face_for(c);
+                face.font.as_scaled(px_scale(face, size)).h_advance(face.font.glyph_id(c))
+            })
+            .sum();
         maxw = maxw.max(w);
     }
     (maxw, n.max(1) as f32 * (sf.height() + sf.line_gap()))
@@ -297,6 +342,19 @@ fn draw_shape(pm: &mut Pixmap, ann: &Annotation, off: f32, shadow: bool) {
                 if let Some(path) = rect_path(*a, *b) {
                     let c = st.stroke;
                     pm.fill_path(&path, &paint([c[0], c[1], c[2], 100]), FillRule::Winding, t, None);
+                }
+            }
+        }
+        Shape::Redact { a, b } => {
+            if !shadow {
+                // Auf ganze Pixel nach außen runden und ohne Kantenglättung, voll deckend:
+                // kein halbtransparenter Rand, durch den Inhalt durchscheint.
+                let r = rect(*a, *b);
+                if let Some(r) = tiny_skia::Rect::from_ltrb(r.min.x.floor(), r.min.y.floor(), r.max.x.ceil(), r.max.y.ceil()) {
+                    let c = st.stroke;
+                    let mut p = paint([c[0], c[1], c[2], 255]);
+                    p.anti_alias = false;
+                    pm.fill_rect(r, &p, Transform::identity(), None);
                 }
             }
         }
@@ -346,7 +404,9 @@ fn draw_shape(pm: &mut Pixmap, ann: &Annotation, off: f32, shadow: bool) {
 }
 
 pub fn casts_shadow(a: &Annotation) -> bool {
-    a.style.shadow && !matches!(a.shape, Shape::Highlight { .. } | Shape::Spotlight { .. }) && !a.shape.is_effect()
+    a.style.shadow
+        && !matches!(a.shape, Shape::Highlight { .. } | Shape::Spotlight { .. } | Shape::Redact { .. })
+        && !a.shape.is_effect()
 }
 
 pub fn shadow_offset(a: &Annotation) -> f32 {
@@ -405,7 +465,9 @@ pub fn apply_frame_effects(mut img: RgbaImage, fx: &Effects) -> RgbaImage {
             let a = (px.0[3] as f32 * 0.55) as u8;
             shadow.put_pixel(x + pad + off, y + pad + off, Px([0, 0, 0, a]));
         }
-        let mut out = imageops::blur(&shadow, blur / 2.0);
+        // Box-Blur-Näherung: optisch gleich, aber um Größenordnungen schneller als ein echter Gauß
+        // (bei 5K-Bildern sonst mehrere Sekunden pro Export bzw. Autosave).
+        let mut out = imageops::fast_blur(&shadow, blur / 2.0);
         imageops::overlay(&mut out, &img, pad as i64, pad as i64);
         img = out;
     }
@@ -438,6 +500,32 @@ mod tests {
         assert_eq!(loose.get_pixel(4, 3).0, red, "mit Toleranz bis zur Linie füllen");
         assert_eq!(loose.get_pixel(5, 0).0, [0, 0, 0, 255], "Linie bleibt");
         assert_eq!(loose.get_pixel(7, 0).0, [255, 255, 255, 255], "rechts der Linie bleibt unberührt");
+    }
+
+    #[test]
+    fn redact_is_fully_opaque() {
+        // Auffälliges Muster, halbtransparente Farbe und Kanten auf halben Pixeln
+        let img = RgbaImage::from_fn(40, 30, |x, y| Px([(x * 6) as u8, (y * 8) as u8, 200, 255]));
+        let mut doc = Document::new(img);
+        let style = Style { stroke: [10, 20, 30, 80], shadow: true, ..Style::default() };
+        doc.annotations.push(Annotation { shape: Shape::Redact { a: [5.5, 4.5], b: [20.5, 12.5] }, style });
+        let out = render(&doc);
+        for y in 4..13 {
+            for x in 5..21 {
+                assert_eq!(out.get_pixel(x, y).0, [10, 20, 30, 255], "({x}, {y}) vollständig abgedeckt");
+            }
+        }
+        assert_ne!(out.get_pixel(30, 20).0, [10, 20, 30, 255], "außerhalb unverändert");
+    }
+
+    #[test]
+    fn text_uses_fallback_fonts() {
+        // Emoji fehlt in Ubuntu Light, muss über die Ersatzschrift kommen (wie im Editor).
+        assert!(!std::ptr::eq(face_for('😀'), &faces()[0]), "Ersatzschrift für Emoji");
+        assert!(std::ptr::eq(face_for('a'), &faces()[0]), "Latein aus der Hauptschrift");
+        let mut pm = Pixmap::new(80, 60).unwrap();
+        draw_text(&mut pm, 4.0, 4.0, "😀", 40.0, [255, 255, 255, 255]);
+        assert!(pm.data().chunks_exact(4).any(|p| p[3] > 0), "Emoji wird gezeichnet");
     }
 
     #[test]

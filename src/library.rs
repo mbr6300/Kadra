@@ -17,6 +17,12 @@ use crate::render;
 const LEGACY_NAME: &str = "SnapIt";
 
 pub fn data_dir() -> PathBuf {
+    // Tests arbeiten in einem eigenen Temp-Ordner, nie in der echten Bibliothek.
+    if cfg!(test) {
+        let d = std::env::temp_dir().join(format!("kadra-test-{}", std::process::id()));
+        let _ = fs::create_dir_all(d.join("library"));
+        return d;
+    }
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     let d = base.join("Kadra");
     static MIGRATE: std::sync::Once = std::sync::Once::new();
@@ -324,6 +330,19 @@ pub fn export(img: &RgbaImage, path: &Path, jpeg_quality: u8) -> Result<(), Stri
     res.map_err(|e| e.to_string())
 }
 
+/// `path`, oder – falls schon vorhanden – „Name 2.ext“, „Name 3.ext“ … (nie überschreiben).
+pub fn unique_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem} {n}{ext}")))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
 /// Formate mit einstellbarer Qualität.
 pub fn has_quality(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
@@ -435,6 +454,20 @@ mod tests {
         for ext in ITEM_FILES {
             let _ = fs::remove_file(trash_dir().join(format!("{id}.{ext}")));
         }
+    }
+
+    #[test]
+    fn unique_path_never_overwrites() {
+        let dir = data_dir().join("unique");
+        let _ = fs::create_dir_all(&dir);
+        let p = dir.join("Kadra Test.png");
+        let _ = fs::remove_file(&p);
+        assert_eq!(unique_path(&p), p, "frei: unverändert");
+        fs::write(&p, b"x").unwrap();
+        assert_eq!(unique_path(&p), dir.join("Kadra Test 2.png"));
+        fs::write(dir.join("Kadra Test 2.png"), b"x").unwrap();
+        assert_eq!(unique_path(&p), dir.join("Kadra Test 3.png"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
