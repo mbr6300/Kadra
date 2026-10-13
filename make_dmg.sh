@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 
 ./bundle.sh
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 | sed 's/\.0$//')
 DMG="target/SnapIt-$VERSION.dmg"
 STAGE=target/dmg-stage
 RW=target/SnapIt-rw.dmg

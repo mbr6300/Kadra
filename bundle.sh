@@ -6,6 +6,8 @@ set -e
 cd "$(dirname "$0")"
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+# Anzeigeversion ohne „.0“ am Ende (0.81.0 → 0.81)
+SHORT_VERSION=$(echo "$VERSION" | sed 's/\.0$//')
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 TARGETS="$HOST"
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -45,7 +47,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>SnapIt</string>
   <key>CFBundleIdentifier</key><string>ch.snapit.app</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
-  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$SHORT_VERSION</string>
   <key>CFBundleExecutable</key><string>SnapIt</string>
   <key>CFBundleIconFile</key><string>SnapIt</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -66,4 +68,4 @@ else
   codesign --force --deep -s - "$APP"
   echo "Ad-hoc signiert (Berechtigung muss nach jedem Neubau neu erteilt werden)"
 fi
-echo "Fertig: $APP ($VERSION)"
+echo "Fertig: $APP ($SHORT_VERSION)"

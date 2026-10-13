@@ -2,6 +2,9 @@
 
 Screenshot-Werkzeug im Stil von SnagIt (ohne Video), geschrieben in Rust (eframe/egui, xcap, tiny-skia).
 
+Ausführliche Beschreibung aller Funktionen, Architektur und möglicher Erweiterungen:
+**[docs/DOKUMENTATION.md](docs/DOKUMENTATION.md)**
+
 ## Starten
 
 ```bash
