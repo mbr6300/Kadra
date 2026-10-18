@@ -1,6 +1,6 @@
 # Kadra – Dokumentation
 
-Kadra ist ein Screenshot-Werkzeug für macOS.
+Kadra ist ein Screenshot-Werkzeug für macOS und Windows.
 Es nimmt Bildschirmbereiche, Fenster oder ganze Bildschirme auf, bietet einen Editor zum
 Beschriften und Nachbearbeiten und gibt das Ergebnis als Datei oder über die Zwischenablage aus.
 Geschrieben in Rust (eframe/egui), läuft als native App mit Menüleisten-Symbol.
@@ -12,13 +12,15 @@ Geschrieben in Rust (eframe/egui), läuft als native App mit Menüleisten-Symbol
 | Weg | Vorgehen |
 |---|---|
 | DMG (Release) | DMG öffnen, **Kadra** auf **Programme** ziehen. Da die App nicht notarisiert ist: beim ersten Start im Finder *Rechtsklick → Öffnen*. |
-| Aus dem Quellcode | `./bundle.sh` baut `target/Kadra.app`, `./make_dmg.sh` zusätzlich das DMG. |
+| Windows-Installer (Release) | `Kadra-Setup-<version>.exe` ausführen (keine Administratorrechte nötig). Da der Installer nicht signiert ist, warnt SmartScreen: *Weitere Informationen → Trotzdem ausführen*. Alternativ die portable ZIP-Version entpacken und `kadra.exe` starten. |
+| Aus dem Quellcode | `./bundle.sh` baut `target/Kadra.app`, `./make_dmg.sh` zusätzlich das DMG, `./make_windows.sh` Windows-Installer und ZIP (Cross-Compile auf dem Mac, siehe README). |
 
 Beim ersten Aufnehmen fragt macOS nach **Bildschirm- und Systemaudioaufnahme**
 (Systemeinstellungen → Datenschutz & Sicherheit). Danach Kadra neu starten.
 Fehlt die Berechtigung, zeigt Kadra einen Hinweis mit Direktlink zu den Einstellungen.
 
-Voraussetzungen: macOS 12+, Apple Silicon (Universal-Build möglich, siehe Abschnitt 6).
+Voraussetzungen: macOS 12+, Apple Silicon (Universal-Build möglich, siehe Abschnitt 6) bzw.
+Windows 10/11 (x64).
 
 **Umstieg von früheren Versionen (bis 0.8.2 unter dem Namen „SnapIt“):** Bibliothek und
 Einstellungen werden beim ersten Start automatisch übernommen. Die Berechtigung für
@@ -127,11 +129,32 @@ Objekte verschieben und an den Ecken skalieren (Seitenverhältnis bleibt, ⇧ = 
 verschieben. Transparente (ausgeschnittene) Bereiche zeigt der Editor als Schachbrett; JPEG/BMP/PDF
 exportieren sie weiß.
 
-### 2.7 Einstellungen
+### 2.7 Windows
+
+Seit 0.10.0 gibt es Kadra auch für Windows 10/11 (x64). Funktionen und Bedienung entsprechen der
+macOS-Version, mit diesen Unterschieden:
+
+- **Kürzel** mit **Strg** statt ⌘ und **Umschalt** statt ⇧ (z. B. Strg+S, Strg+Umschalt+Z);
+  globale Aufnahme-Kürzel standardmäßig Strg+Umschalt+1 … 4. Globale Kürzel können zusätzlich die
+  Windows-Taste nutzen.
+- **Menüleiste im Fenster:** Datei (inkl. Einstellungen und Beenden), Bearbeiten, Bild, Werkzeuge,
+  Darstellung, Hilfe (inkl. „Über Kadra“).
+- **Hintergrundbetrieb:** Schließen blendet das Fenster aus; Kadra bleibt mit Symbol im
+  **Infobereich der Taskleiste** (unten rechts) aktiv. Technisch wird das Fenster dabei nicht
+  versteckt, sondern ohne Taskleisten-Eintrag außerhalb des Bildschirms geparkt – sonst würde
+  Windows ihm keine Zeichen-Ereignisse mehr schicken und Tray-Menü sowie Kürzel blieben wirkungslos.
+- **Keine Berechtigung** für Bildschirmaufnahme nötig.
+- **Daten:** Bibliothek und Einstellungen unter `%APPDATA%\Kadra`, Schnellspeichern nach
+  `Bilder\Kadra`.
+- **Hohe DPI-Skalierung** (125 %, 150 % …) wird berücksichtigt; bei Monitoren mit unterschiedlicher
+  Skalierung kann die Fensterhervorhebung im Overlay leicht versetzt sein.
+
+### 2.8 Einstellungen
 
 Zielordner, Format fürs Schnellspeichern, JPEG-/PDF-Qualität, automatisches Kopieren nach der
 Aufnahme, globale Kürzel ein/aus und **frei belegbar** (Kombination per Tastendruck aufnehmen,
-Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings.json`.
+Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings.json`
+(Windows: `%APPDATA%\Kadra\settings.json`).
 
 ---
 
@@ -161,7 +184,8 @@ src/
 ├── library.rs    Bibliothek, Einstellungen, Export aller Formate inkl. PDF-Writer
 ├── hotkeys.rs    Globale, frei belegbare Tastenkürzel (global-hotkey)
 ├── tray.rs       Menüleisten-Symbol und -Menü (tray-icon)
-├── platform.rs   macOS-spezifisch: Berechtigung, Fensterliste/-aufnahme (CoreGraphics), Fensterebene, Dock
+├── platform.rs   Plattform: macOS (Berechtigung, CoreGraphics-Fensterliste, Fensterebene, Dock),
+│                 Windows (Fenster parken, Menü-Kürzel, Cursor, Topmost), DPI-Umrechnung
 ├── ui_kit.rs     Stil, Signaturfarbe, Leisten- und Dialog-Buttons
 └── icon.rs       App-Icon (Dock, Iconset)
 ```
@@ -174,7 +198,8 @@ Anmerkungen werden nie ins Original gerechnet, daher bleibt alles bis zum Export
 (Rendering), image (Formate), global-hotkey, tray-icon, arboard (Zwischenablage), rfd (Dateidialoge).
 
 **Build-Skripte:** `bundle.sh` (App-Paket, Icon, Signatur, optional Universal-Binary),
-`make_dmg.sh` (DMG mit Finder-Layout), `examples/make_icon.rs` (Iconset).
+`make_dmg.sh` (DMG mit Finder-Layout), `make_windows.sh` + `installer/kadra.nsi` (Windows-Installer
+und ZIP), `build.rs` (Icon/Versionsinfo in der .exe), `examples/make_icon.rs` (Iconset bzw. `--ico`).
 
 **Tests:** `cargo test` – Rendering aller Formen, Füllalgorithmus, Export aller Formate,
 JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste.
@@ -183,7 +208,8 @@ JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste.
 
 ## 5. Bekannte Grenzen
 
-- Nur macOS getestet (Code ist teilweise plattformneutral, siehe Erweiterungen).
+- Windows-Version per Cross-Compile gebaut; Installer und .exe sind nicht signiert (SmartScreen-Hinweis).
+- Unter Windows fangen Menü-Kürzel (Strg+C/V/Z) auch beim Bearbeiten von Text das Kürzel ab – wie unter macOS.
 - Release-DMG nur für Apple Silicon und nicht notarisiert (Gatekeeper-Warnung beim ersten Start).
 - Minimierte Fenster liefert macOS meist nicht als Bild.
 - Auswahl-Overlay jeweils auf dem Bildschirm unter dem Mauszeiger.
@@ -220,9 +246,10 @@ JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste.
 - Speichergrenze bzw. automatisches Aufräumen alter Aufnahmen
 
 **App und Plattform**
-- Notarisierung und Developer-ID-Signatur für reibungslose Installation
+- Notarisierung und Developer-ID-Signatur (macOS) bzw. Authenticode-Signatur (Windows)
+- Windows-Build für ARM64, Build per GitHub Actions
 - Universal-Binary (Apple Silicon + Intel) als Standard-Release
 - Automatische Updates (z. B. Sparkle), Start bei Anmeldung
 - Englische Oberfläche / Mehrsprachigkeit
-- Windows- und Linux-Unterstützung (xcap, tray-icon und global-hotkey sind plattformübergreifend;
+- Linux-Unterstützung (xcap, tray-icon und global-hotkey sind plattformübergreifend;
   macOS-Spezifika liegen gekapselt in `platform.rs`)

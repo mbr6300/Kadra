@@ -210,3 +210,33 @@ pub fn bar_separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(13.0, 40.0), Sense::hover());
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
 }
+
+/// Tastenkürzel im macOS-Stil („⌘⇧S“) in der Schreibweise der Plattform –
+/// unter Windows „Strg+Umschalt+S“.
+pub fn keys(mac: &str) -> String {
+    if cfg!(target_os = "macos") { mac.to_string() } else { pc_keys(mac) }
+}
+
+fn pc_keys(mac: &str) -> String {
+    let mut out = String::new();
+    for c in mac.chars() {
+        match c {
+            '⌘' | '⌃' => out += "Strg+",
+            '⇧' => out += "Umschalt+",
+            '⌥' => out += "Alt+",
+            '⌫' => out += "Entf",
+            c => out.push(c),
+        }
+    }
+    out.replace("+ + ", " + ")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pc_key_names() {
+        assert_eq!(super::pc_keys("Speichern (⌘⇧S)"), "Speichern (Strg+Umschalt+S)");
+        assert_eq!(super::pc_keys("⌫ Löschen · ⌘ + Scrollen Zoom"), "Entf Löschen · Strg + Scrollen Zoom");
+        assert_eq!(super::pc_keys("⌃ + ⇧ + 1"), "Strg + Umschalt + 1");
+    }
+}

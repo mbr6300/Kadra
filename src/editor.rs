@@ -846,16 +846,16 @@ impl Editor {
             let on = self.marquee_px().is_some();
             let wide = Vec2::new(ui.available_width(), 30.0);
             ui.add_enabled_ui(on, |ui| {
-                if ui.add(egui::Button::new("✂  Ausschneiden   ⌘X").min_size(wide)).clicked() {
+                if ui.add(egui::Button::new(crate::ui_kit::keys("✂  Ausschneiden   ⌘X")).min_size(wide)).clicked() {
                     self.clipboard_out = self.cut_marquee();
                 }
-                if ui.add(egui::Button::new("⧉  Kopieren   ⌘C").min_size(wide)).clicked() {
+                if ui.add(egui::Button::new(crate::ui_kit::keys("⧉  Kopieren   ⌘C")).min_size(wide)).clicked() {
                     self.clipboard_out = self.marquee_piece();
                 }
-                if ui.add(egui::Button::new("⊕  Duplizieren   ⌘D").min_size(wide)).clicked() {
+                if ui.add(egui::Button::new(crate::ui_kit::keys("⊕  Duplizieren   ⌘D")).min_size(wide)).clicked() {
                     self.duplicate_marquee();
                 }
-                if ui.add(egui::Button::new("🗑  Löschen   ⌫").min_size(wide)).clicked() {
+                if ui.add(egui::Button::new(crate::ui_kit::keys("🗑  Löschen   ⌫")).min_size(wide)).clicked() {
                     self.delete_marquee();
                 }
                 if ui.add(egui::Button::new("⛶  Auf Auswahl zuschneiden").min_size(wide)).clicked() {
@@ -863,7 +863,7 @@ impl Editor {
                 }
             });
             ui.add_space(4.0);
-            ui.weak("⌘V fügt ein Bild aus der Zwischenablage als verschiebbares Bildstück ein.");
+            ui.weak(crate::ui_kit::keys("⌘V fügt ein Bild aus der Zwischenablage als verschiebbares Bildstück ein."));
         } else if kind != Tool::Select {
             let original = sel.map(|i| self.doc.annotations[i].style.clone()).unwrap_or_else(|| self.styles[&kind].clone());
             let mut st = original.clone();
@@ -1517,11 +1517,11 @@ impl Editor {
                                 ui.label(RichText::new(format!("{w} × {h} px")).monospace());
                                 ui.add_space(4.0);
                                 for (label, tip, act) in [
-                                    ("✂ Ausschneiden", "⌘X", 0),
-                                    ("⧉ Kopieren", "⌘C", 1),
-                                    ("⊕ Duplizieren", "⌘D", 2),
-                                    ("🗑", "Löschen (⌫)", 3),
-                                    ("⛶", "Auf Auswahl zuschneiden", 4),
+                                    ("✂ Ausschneiden", crate::ui_kit::keys("⌘X"), 0),
+                                    ("⧉ Kopieren", crate::ui_kit::keys("⌘C"), 1),
+                                    ("⊕ Duplizieren", crate::ui_kit::keys("⌘D"), 2),
+                                    ("🗑", crate::ui_kit::keys("Löschen (⌫)"), 3),
+                                    ("⛶", "Auf Auswahl zuschneiden".to_string(), 4),
                                 ] {
                                     if ui.button(label).on_hover_text(tip).clicked() {
                                         action = Some(act);

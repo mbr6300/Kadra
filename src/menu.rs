@@ -14,6 +14,8 @@ use crate::library::FORMATS;
 
 pub const REPO_URL: &str = "https://github.com/mbr6300/Kadra";
 
+const MAC: bool = cfg!(target_os = "macos");
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     // Aufnahme & App
@@ -188,15 +190,17 @@ impl AppMenu {
             it
         };
 
-        // Kadra
+        // Kadra (macOS) – unter Windows wandern Einstellungen/Beenden ins Datei-Menü, „Über“ in die Hilfe.
         let about = PredefinedMenuItem::about(Some("Über Kadra"), Some(about_metadata(about_icon)));
+        let settings = tracked(Action::Settings, "Einstellungen …", Some("CMDORCTRL+COMMA"));
+        let quit = tracked(Action::Quit, "Kadra beenden", Some("CMDORCTRL+Q"));
         let app = Submenu::with_items(
             "Kadra",
             true,
             &[
                 &about,
                 &PredefinedMenuItem::separator(),
-                &tracked(Action::Settings, "Einstellungen …", Some("CMD+COMMA")),
+                &settings,
                 &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::services(Some("Dienste")),
                 &PredefinedMenuItem::separator(),
@@ -204,7 +208,7 @@ impl AppMenu {
                 &PredefinedMenuItem::hide_others(Some("Andere ausblenden")),
                 &PredefinedMenuItem::show_all(Some("Alle einblenden")),
                 &PredefinedMenuItem::separator(),
-                &tracked(Action::Quit, "Kadra beenden", Some("CMD+Q")),
+                &quit,
             ],
         )
         .ok()?;
@@ -224,28 +228,23 @@ impl AppMenu {
             FORMATS.iter().map(|f| tracked(Action::Export(f.0), &format!("{} (.{})", f.1, f.0), None)).collect();
         let export_refs: Vec<&dyn IsMenuItem> = export_items.iter().map(|i| i as &dyn IsMenuItem).collect();
         let export = Submenu::with_items("Exportieren als", true, &export_refs).ok()?;
-        let file = Submenu::with_items(
-            "Ablage",
-            true,
-            &[
-                &capture,
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::Open, "Öffnen …", Some("CMD+O")),
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::QuickSave, "Schnell speichern", Some("CMD+S")),
-                &tracked(Action::SaveAs, "Speichern unter …", Some("CMD+SHIFT+S")),
-                &export,
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::RevealFolder, "Zielordner im Finder zeigen", None),
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::HideWindow, "Fenster schließen", Some("CMD+W")),
-            ],
-        )
-        .ok()?;
+        let open = tracked(Action::Open, "Öffnen …", Some("CMDORCTRL+O"));
+        let quick = tracked(Action::QuickSave, "Schnell speichern", Some("CMDORCTRL+S"));
+        let save_as = tracked(Action::SaveAs, "Speichern unter …", Some("CMDORCTRL+SHIFT+S"));
+        let reveal_text = if MAC { "Zielordner im Finder zeigen" } else { "Zielordner im Explorer zeigen" };
+        let reveal = tracked(Action::RevealFolder, reveal_text, None);
+        let close = tracked(Action::HideWindow, "Fenster schließen", Some("CMDORCTRL+W"));
+        let sep = PredefinedMenuItem::separator();
+        let mut file_items: Vec<&dyn IsMenuItem> =
+            vec![&capture, &sep, &open, &sep, &quick, &save_as, &export, &sep, &reveal, &sep, &close];
+        if !MAC {
+            file_items.extend([&sep as &dyn IsMenuItem, &settings, &sep, &quit]);
+        }
+        let file = Submenu::with_items(if MAC { "Ablage" } else { "Datei" }, true, &file_items).ok()?;
 
         // Bearbeiten
-        let undo = item(Action::Undo, "Rückgängig", Some("CMD+Z"));
-        let redo = item(Action::Redo, "Wiederholen", Some("CMD+SHIFT+Z"));
+        let undo = item(Action::Undo, "Rückgängig", Some("CMDORCTRL+Z"));
+        let redo = item(Action::Redo, "Wiederholen", Some("CMDORCTRL+SHIFT+Z"));
         let edit = Submenu::with_items(
             "Bearbeiten",
             true,
@@ -253,12 +252,12 @@ impl AppMenu {
                 &undo,
                 &redo,
                 &PredefinedMenuItem::separator(),
-                &tracked(Action::Cut, "Ausschneiden", Some("CMD+X")),
-                &tracked(Action::Copy, "Kopieren", Some("CMD+C")),
-                &tracked(Action::Paste, "Einfügen", Some("CMD+V")),
-                &tracked(Action::SelectAll, "Alles auswählen", Some("CMD+A")),
+                &tracked(Action::Cut, "Ausschneiden", Some("CMDORCTRL+X")),
+                &tracked(Action::Copy, "Kopieren", Some("CMDORCTRL+C")),
+                &tracked(Action::Paste, "Einfügen", Some("CMDORCTRL+V")),
+                &tracked(Action::SelectAll, "Alles auswählen", Some("CMDORCTRL+A")),
                 &PredefinedMenuItem::separator(),
-                &tracked(Action::Duplicate, "Duplizieren", Some("CMD+D")),
+                &tracked(Action::Duplicate, "Duplizieren", Some("CMDORCTRL+D")),
                 &tracked(Action::Delete, "Objekt löschen", None),
                 &tracked(Action::Deselect, "Auswahl aufheben", None),
             ],
@@ -295,10 +294,10 @@ impl AppMenu {
             "Darstellung",
             true,
             &[
-                &tracked(Action::ZoomFit, "Ins Fenster einpassen", Some("CMD+0")),
-                &tracked(Action::ZoomActual, "Originalgröße (100 %)", Some("CMD+1")),
-                &tracked(Action::ZoomIn, "Vergrößern", Some("CMD+EQUAL")),
-                &tracked(Action::ZoomOut, "Verkleinern", Some("CMD+MINUS")),
+                &tracked(Action::ZoomFit, "Ins Fenster einpassen", Some("CMDORCTRL+0")),
+                &tracked(Action::ZoomActual, "Originalgröße (100 %)", Some("CMDORCTRL+1")),
+                &tracked(Action::ZoomIn, "Vergrößern", Some("CMDORCTRL+EQUAL")),
+                &tracked(Action::ZoomOut, "Verkleinern", Some("CMDORCTRL+MINUS")),
             ],
         )
         .ok()?;
@@ -317,27 +316,46 @@ impl AppMenu {
         .ok()?;
 
         // Hilfe
-        let help = Submenu::with_items(
-            "Hilfe",
-            true,
-            &[
-                &item(Action::Docs, "Kadra-Dokumentation", None),
-                &item(Action::Settings, "Tastenkürzel …", None),
-                &PredefinedMenuItem::separator(),
-                &item(Action::Website, "Kadra auf GitHub", None),
-                &item(Action::Issues, "Problem melden …", None),
-            ],
-        )
-        .ok()?;
+        let (docs, keys, website, issues) = (
+            item(Action::Docs, "Kadra-Dokumentation", None),
+            item(Action::Settings, "Tastenkürzel …", None),
+            item(Action::Website, "Kadra auf GitHub", None),
+            item(Action::Issues, "Problem melden …", None),
+        );
+        let mut help_items: Vec<&dyn IsMenuItem> = vec![&docs, &keys, &sep, &website, &issues];
+        if !MAC {
+            help_items.extend([&sep as &dyn IsMenuItem, &about]);
+        }
+        let help = Submenu::with_items("Hilfe", true, &help_items).ok()?;
 
-        let menu = Menu::with_items(&[&app, &file, &edit, &image, &tools, &view, &window, &help]).ok()?;
+        let menu = if MAC {
+            Menu::with_items(&[&app, &file, &edit, &image, &tools, &view, &window, &help])
+        } else {
+            Menu::with_items(&[&file, &edit, &image, &tools, &view, &help])
+        }
+        .ok()?;
         #[cfg(target_os = "macos")]
         {
             menu.init_for_nsapp();
             window.set_as_windows_menu_for_nsapp();
             help.set_as_help_menu_for_nsapp();
         }
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = crate::platform::win::main_window();
+            // SAFETY: Hauptfenster von eframe, lebt so lange wie die App.
+            unsafe { menu.init_for_hwnd(hwnd).ok()? };
+            crate::platform::win::set_accelerators(menu.haccel());
+        }
         Some(Self { _menu: menu, capture_items, editor_items, undo, redo, last_state: None })
+    }
+
+    /// Windows: Menüleiste während des Auswahl-Overlays ausblenden (sie gehört zum Fenster).
+    #[cfg(target_os = "windows")]
+    pub fn set_bar_visible(&self, visible: bool) {
+        let hwnd = crate::platform::win::main_window();
+        // SAFETY: wie in `new`.
+        let _ = unsafe { if visible { self._menu.show_for_hwnd(hwnd) } else { self._menu.hide_for_hwnd(hwnd) } };
     }
 
     /// Aktiviert/deaktiviert Einträge je nach Zustand (nur bei Änderung).
@@ -360,24 +378,36 @@ impl AppMenu {
         for ((_, it), sc) in self.capture_items.iter().zip(shortcuts) {
             let _ = it.set_accelerator(shortcut_accel(sc.as_ref()));
         }
+        // muda baut die Kürzel-Tabelle dabei neu auf.
+        #[cfg(target_os = "windows")]
+        crate::platform::win::set_accelerators(self._menu.haccel());
     }
 }
 
 fn about_metadata(icon: Option<Icon>) -> AboutMetadata {
-    let arch = if cfg!(target_arch = "aarch64") { "Apple Silicon" } else { "Intel" };
+    let (os, arch) = if MAC {
+        ("macOS", if cfg!(target_arch = "aarch64") { "Apple Silicon" } else { "Intel" })
+    } else {
+        ("Windows", if cfg!(target_arch = "aarch64") { "ARM64" } else { "x64" })
+    };
+    let summary = "Screenshot-Werkzeug: Bildschirmfotos aufnehmen, beschriften und exportieren.";
     AboutMetadata {
         name: Some("Kadra".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         copyright: Some("© 2026 mbr6300 · GNU GPL v3.0 oder neuer".into()),
         credits: Some(format!(
-            "Screenshot-Werkzeug für macOS: Bildschirmfotos aufnehmen, beschriften und exportieren.\n\n\
+            "{summary}\n\n\
              Aufnahme von Bereich, Fenster oder Bildschirm · Editor mit Pfeilen, Text, Formen, \
              Nummern, Füllen, Weichzeichnen und Zuschneiden · Export als PNG, JPEG, TIFF, WebP, GIF, BMP, PDF.\n\n\
              Quellcode: {REPO_URL}\n\
              Lizenz: GNU General Public License v3.0 oder neuer\n\n\
              Erstellt mit Rust, egui/eframe, xcap, tiny-skia, image, global-hotkey, tray-icon und muda.\n\
-             Build: macOS · {arch}"
+             Build: {os} · {arch}"
         )),
+        // Windows zeigt statt `credits` diese Felder an.
+        comments: Some(format!("{summary}\nBuild: {os} · {arch}")),
+        license: Some("GNU GPL v3.0 oder neuer".into()),
+        website: Some(REPO_URL.into()),
         icon,
         ..Default::default()
     }
@@ -401,7 +431,7 @@ mod tests {
 
     #[test]
     fn accelerators_parse() {
-        for s in ["CMD+COMMA", "CMD+Q", "CMD+O", "CMD+S", "CMD+SHIFT+S", "CMD+W", "CMD+Z", "CMD+SHIFT+Z", "CMD+X", "CMD+C", "CMD+V", "CMD+A", "CMD+D", "CMD+0", "CMD+1", "CMD+EQUAL", "CMD+MINUS"] {
+        for s in ["CMDORCTRL+COMMA", "CMDORCTRL+Q", "CMDORCTRL+O", "CMDORCTRL+S", "CMDORCTRL+SHIFT+S", "CMDORCTRL+W", "CMDORCTRL+Z", "CMDORCTRL+SHIFT+Z", "CMDORCTRL+X", "CMDORCTRL+C", "CMDORCTRL+V", "CMDORCTRL+A", "CMDORCTRL+D", "CMDORCTRL+0", "CMDORCTRL+1", "CMDORCTRL+EQUAL", "CMDORCTRL+MINUS"] {
             assert!(s.parse::<tray_icon::menu::accelerator::Accelerator>().is_ok(), "{s}");
         }
         for sc in Shortcut::defaults() {

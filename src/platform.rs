@@ -27,7 +27,13 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: physische Pixel (wie die Monitor-Koordinaten von xcap).
+#[cfg(target_os = "windows")]
+pub fn cursor_pos() -> Option<(f64, f64)> {
+    win::cursor_pos()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn cursor_pos() -> Option<(f64, f64)> {
     None
 }
@@ -339,9 +345,25 @@ pub fn activate_app() {
     }
 }
 
+/// Datei, Ordner oder URL mit dem Standardprogramm öffnen.
+pub fn open(target: impl AsRef<std::ffi::OsStr>) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd).arg(target).spawn();
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_visible(_visible: bool) {}
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn activate_app() {
+    win::activate();
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn activate_app() {}
 
 /// Hebt das Fenster über Menüleiste und Dock (für das Auswahl-Overlay).
@@ -365,5 +387,126 @@ pub fn set_overlay_level(frame: &eframe::Frame, overlay: bool) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn set_overlay_level(_frame: &eframe::Frame, overlay: bool) {
+    win::set_topmost(overlay);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_overlay_level(_frame: &eframe::Frame, _overlay: bool) {}
+
+/// Faktor physische Pixel → logische Punkte für Koordinaten aus xcap/`list_windows`.
+/// macOS liefert schon logische Punkte, Windows physische Pixel.
+pub fn coord_scale(m: &xcap::Monitor) -> f32 {
+    if cfg!(target_os = "windows") { m.scale_factor().unwrap_or(1.0).max(0.1) } else { 1.0 }
+}
+
+/// Windows: Fenster im Hintergrund. Ein mit `ShowWindow(SW_HIDE)` verstecktes Fenster bekommt
+/// kein WM_PAINT mehr – eframe würde dann weder Tray-Klicks noch globale Kürzel verarbeiten.
+/// Daher wird das Fenster nicht versteckt, sondern ohne Taskleisten-Eintrag außerhalb des
+/// sichtbaren Bereichs geparkt.
+#[cfg(target_os = "windows")]
+pub mod win {
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    static MAIN: AtomicIsize = AtomicIsize::new(0);
+    static PARK_PENDING: AtomicBool = AtomicBool::new(false);
+    static ACCEL: AtomicIsize = AtomicIsize::new(0);
+    /// Position und erweiterter Fensterstil vor dem Parken.
+    static PARKED: Mutex<Option<(i32, i32, isize)>> = Mutex::new(None);
+
+    fn hwnd() -> Option<HWND> {
+        let h = MAIN.load(Ordering::Relaxed);
+        (h != 0).then_some(h as HWND)
+    }
+
+    pub fn set_main_window(h: isize) {
+        MAIN.store(h, Ordering::Relaxed);
+    }
+
+    pub fn main_window() -> isize {
+        MAIN.load(Ordering::Relaxed)
+    }
+
+    /// Tastenkürzel-Tabelle der Menüleiste (muda).
+    pub fn set_accelerators(haccel: isize) {
+        ACCEL.store(haccel, Ordering::Relaxed);
+    }
+
+    /// Message-Hook der Ereignisschleife: löst Menü-Kürzel aus (true = verarbeitet).
+    pub fn translate_accelerator(msg: *const c_void) -> bool {
+        let (Some(h), a) = (hwnd(), ACCEL.load(Ordering::Relaxed)) else { return false };
+        a != 0 && unsafe { TranslateAcceleratorW(h, a as HACCEL, msg as *const MSG) } != 0
+    }
+
+    pub fn cursor_pos() -> Option<(f64, f64)> {
+        let mut p = POINT { x: 0, y: 0 };
+        (unsafe { GetCursorPos(&mut p) } != 0).then(|| (p.x as f64, p.y as f64))
+    }
+
+    pub fn activate() {
+        if let Some(h) = hwnd() {
+            unsafe { SetForegroundWindow(h) };
+        }
+    }
+
+    pub fn set_topmost(on: bool) {
+        if let Some(h) = hwnd() {
+            let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            unsafe { SetWindowPos(h, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
+        }
+    }
+
+    /// Parkt im nächsten Frame – erst nachdem eframe gerade gesendete Größen-/Positionsbefehle
+    /// angewendet hat (sonst holen diese das Fenster wieder in den sichtbaren Bereich).
+    pub fn request_park() {
+        PARK_PENDING.store(true, Ordering::Relaxed);
+    }
+
+    /// Zu Beginn jedes Frames aufrufen.
+    pub fn apply_pending_park() {
+        if PARK_PENDING.swap(false, Ordering::Relaxed) {
+            park();
+        }
+    }
+
+    fn park() {
+        let Some(h) = hwnd() else { return };
+        let mut parked = PARKED.lock().unwrap();
+        if parked.is_some() {
+            return;
+        }
+        unsafe {
+            let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            GetWindowRect(h, &mut r);
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            *parked = Some((r.left, r.top, ex));
+            // Stilwechsel wirkt auf die Taskleiste erst nach erneutem Einblenden.
+            ShowWindow(h, SW_HIDE);
+            SetWindowLongPtrW(h, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize));
+            SetWindowPos(h, std::ptr::null_mut(), -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            ShowWindow(h, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    /// `restore_pos = false`: Position setzt der Aufrufer (Overlay).
+    pub fn unpark(restore_pos: bool) {
+        PARK_PENDING.store(false, Ordering::Relaxed);
+        let Some(h) = hwnd() else { return };
+        let Some((x, y, ex)) = PARKED.lock().unwrap().take() else { return };
+        unsafe {
+            ShowWindow(h, SW_HIDE);
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+            if restore_pos {
+                SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            ShowWindow(h, SW_SHOW);
+            SetForegroundWindow(h);
+        }
+    }
+}

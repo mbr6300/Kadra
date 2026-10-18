@@ -1,5 +1,6 @@
 //! Symbol in der Menüleiste (oben rechts) mit Schnellauswahl.
 
+#[cfg(target_os = "macos")]
 use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -31,12 +32,13 @@ impl Tray {
         menu.append(&PredefinedMenuItem::separator()).ok()?;
         menu.append(&item(Action::Quit, "Kadra beenden", None)).ok()?;
 
-        let icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_icon_templated(template_icon())
-            .with_tooltip("Kadra")
-            .build()
-            .ok()?;
+        let builder = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Kadra");
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(template_icon());
+        // Windows/Linux: farbiges App-Icon (kein Template-Mechanismus für helle/dunkle Leisten).
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(Icon::from_rgba(crate::icon::rgba_full(32), 32, 32).expect("Tray-Icon"));
+        let icon = builder.build().ok()?;
         Some(Self { _icon: icon, capture_items })
     }
 
@@ -49,6 +51,7 @@ impl Tray {
 }
 
 /// Schwarzes Sucher-Symbol (macOS färbt Template-Icons passend ein), 18 pt @2x.
+#[cfg(target_os = "macos")]
 fn template_icon() -> Icon {
     let s = 36u32;
     let mut pm = Pixmap::new(s, s).unwrap();

@@ -8,9 +8,19 @@ use tiny_skia::{
 
 /// Rendert das Icon quadratisch in `size` Pixeln (macOS-Raster: Fläche 824/1024, zentriert).
 pub fn render(size: u32) -> Pixmap {
+    render_inset(size, 100.0 / 1024.0)
+}
+
+/// Fast randlos – für Windows (Taskleiste, Infobereich, .ico), wo Icons die Fläche füllen.
+pub fn render_full(size: u32) -> Pixmap {
+    render_inset(size, 0.03)
+}
+
+/// `inset`: Rand als Anteil der Kantenlänge.
+fn render_inset(size: u32, inset: f32) -> Pixmap {
     let s = size as f32;
     let mut pm = Pixmap::new(size, size).unwrap();
-    let inset = s * 100.0 / 1024.0;
+    let inset = s * inset;
     let side = s - 2.0 * inset;
     let r = side * 0.225;
 
@@ -59,7 +69,17 @@ pub fn render(size: u32) -> Pixmap {
 /// Icon als nicht-vormultipliziertes RGBA (für das Dock-Icon).
 #[allow(dead_code)]
 pub fn rgba(size: u32) -> Vec<u8> {
-    render(size).pixels().iter().flat_map(|p| {
+    to_rgba(&render(size))
+}
+
+/// Wie `rgba`, aber fast randlos (Windows).
+#[allow(dead_code)]
+pub fn rgba_full(size: u32) -> Vec<u8> {
+    to_rgba(&render_full(size))
+}
+
+fn to_rgba(pm: &Pixmap) -> Vec<u8> {
+    pm.pixels().iter().flat_map(|p| {
         let c = p.demultiply();
         [c.red(), c.green(), c.blue(), c.alpha()]
     }).collect()
