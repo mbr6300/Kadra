@@ -9,6 +9,7 @@ repository = "https://github.com/mbr6300/Kadra"
 [dependencies]
 ab_glyph = "0.2.32"
 arboard = "3"
+base64 = "0.22"
 chrono = "0.4"
 dirs = "6"
 eframe = "0.33"

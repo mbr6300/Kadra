@@ -298,9 +298,25 @@ impl KadraApp {
                     let _ = std::fs::create_dir_all(&self.settings.save_dir);
                     open_url(&self.settings.save_dir.to_string_lossy());
                 }
-                Action::Copy => self.copy(),
-                Action::Paste => self.paste(),
-                Action::Cut | Action::SelectAll => {}
+                // Mit Markierung wirken Kopieren/Ausschneiden auf den markierten Bereich
+                Action::Copy => match self.editor.as_mut().filter(|e| e.has_marquee()) {
+                    Some(ed) => ed.clipboard_out = ed.marquee_piece(),
+                    None => self.copy(),
+                },
+                Action::Cut => {
+                    if let Some(ed) = self.editor.as_mut().filter(|e| e.has_marquee()) {
+                        ed.clipboard_out = ed.cut_marquee();
+                    }
+                }
+                // Bei offenem Bild als verschiebbares Bildstück einfügen, sonst als neue Aufnahme
+                Action::Paste => match clipboard_image() {
+                    Some(img) => match &mut self.editor {
+                        Some(ed) => ed.paste_piece(img),
+                        None => self.open_new(img),
+                    },
+                    None => self.notify("Kein Bild in der Zwischenablage"),
+                },
+                Action::SelectAll => {}
                 Action::Docs => open_url(&format!("{}/blob/master/docs/DOKUMENTATION.md", menu::REPO_URL)),
                 Action::Website => open_url(menu::REPO_URL),
                 Action::Issues => open_url(&format!("{}/issues", menu::REPO_URL)),
@@ -310,8 +326,8 @@ impl KadraApp {
                         match action {
                             Action::Undo => ed.undo(),
                             Action::Redo => ed.redo(),
-                            Action::Duplicate => ed.duplicate_selected(),
-                            Action::Delete => ed.delete_selected(),
+                            Action::Duplicate => ed.duplicate(),
+                            Action::Delete => ed.delete(),
                             Action::Deselect => ed.selected = None,
                             Action::RotateLeft => ed.rotate(false),
                             Action::RotateRight => ed.rotate(true),
@@ -628,10 +644,7 @@ impl KadraApp {
     }
 
     fn paste(&mut self) {
-        let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok().and_then(|d| {
-            RgbaImage::from_raw(d.width as u32, d.height as u32, d.bytes.into_owned())
-        });
-        match img {
+        match clipboard_image() {
             Some(img) => self.open_new(img),
             None => self.notify("Kein Bild in der Zwischenablage"),
         }
@@ -1192,6 +1205,13 @@ impl eframe::App for KadraApp {
             self.hide_to_background(ctx);
         }
         self.handle_menu_actions(ctx);
+        // Vom Editor ausgeschnittene/kopierte Bereiche in die Zwischenablage legen
+        if let Some(img) = self.editor.as_mut().and_then(|e| e.clipboard_out.take()) {
+            match copy_to_clipboard(&img) {
+                Ok(()) => self.notify(format!("Bereich ({} × {} px) in die Zwischenablage kopiert", img.width(), img.height())),
+                Err(e) => self.notify(format!("Zwischenablage: {e}")),
+            }
+        }
         // Globale Hotkeys
         while let Ok(id) = self.hotkey_rx.try_recv() {
             if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.kind_for(id)) {
@@ -1388,6 +1408,12 @@ fn human_size(bytes: usize) -> String {
         b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1 << 20) as f64),
         b => format!("{} KB", (b + 1023) / 1024),
     }
+}
+
+/// Bild aus der Zwischenablage (falls vorhanden).
+fn clipboard_image() -> Option<RgbaImage> {
+    let d = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok()?;
+    RgbaImage::from_raw(d.width as u32, d.height as u32, d.bytes.into_owned())
 }
 
 fn open_url(target: &str) {

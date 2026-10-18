@@ -10,12 +10,14 @@ use egui::{
 };
 use image::{imageops, RgbaImage};
 
-use crate::doc::{dist_to_segment, p, pos, rect, Annotation, Document, Effects, Rgba, Shape, Style, P};
+use crate::doc::{dist_to_segment, p, pos, rect, Annotation, Document, Effects, Piece, Rgba, Shape, Style, P};
 use crate::render;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Tool {
     Select,
+    /// Bildbereich markieren → ausschneiden, kopieren, duplizieren, löschen.
+    Marquee,
     Arrow,
     Line,
     Rect,
@@ -33,8 +35,9 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 15] = [
+    pub const ALL: [Tool; 16] = [
         Tool::Select,
+        Tool::Marquee,
         Tool::Arrow,
         Tool::Line,
         Tool::Rect,
@@ -54,6 +57,7 @@ impl Tool {
     pub fn icon(self) -> &'static str {
         match self {
             Tool::Select => "⬉",
+            Tool::Marquee => "⬚",
             Tool::Arrow => "➡",
             Tool::Line => "╱",
             Tool::Rect => "⬜",
@@ -74,6 +78,7 @@ impl Tool {
     pub fn name(self) -> &'static str {
         match self {
             Tool::Select => "Auswahl",
+            Tool::Marquee => "Markieren",
             Tool::Arrow => "Pfeil",
             Tool::Line => "Linie",
             Tool::Rect => "Rechteck",
@@ -94,6 +99,7 @@ impl Tool {
     pub fn key(self) -> Key {
         match self {
             Tool::Select => Key::V,
+            Tool::Marquee => Key::M,
             Tool::Arrow => Key::A,
             Tool::Line => Key::L,
             Tool::Rect => Key::R,
@@ -126,6 +132,7 @@ impl Tool {
             Shape::Redact { .. } => Tool::Redact,
             Shape::Spotlight { .. } => Tool::Spotlight,
             Shape::Fill { .. } => Tool::Fill,
+            Shape::Image { .. } => Tool::Marquee,
         }
     }
 
@@ -139,6 +146,8 @@ impl Tool {
             Tool::Pixelate => Style { width: 4.0, shadow: false, ..base },
             Tool::Redact => Style { stroke: [0, 0, 0, 255], shadow: false, ..base },
             Tool::Pen => Style { width: 4.0, ..base },
+            // Bildstücke: standardmäßig ohne Schatten
+            Tool::Marquee => Style { shadow: false, ..base },
             // width = Toleranz in Prozent
             Tool::Fill => Style { stroke: [255, 225, 0, 255], width: 15.0, shadow: false, ..base },
             _ => base,
@@ -152,8 +161,9 @@ pub struct ToolGroup {
     pub tools: &'static [Tool],
 }
 
-pub const MAIN_GROUPS: [ToolGroup; 9] = [
+pub const MAIN_GROUPS: [ToolGroup; 10] = [
     ToolGroup { name: "Auswahl", tools: &[Tool::Select] },
+    ToolGroup { name: "Markieren", tools: &[Tool::Marquee] },
     ToolGroup { name: "Pfeil", tools: &[Tool::Arrow] },
     ToolGroup { name: "Text", tools: &[Tool::Text] },
     ToolGroup { name: "Formen", tools: &[Tool::Rect, Tool::Ellipse, Tool::Line] },
@@ -239,6 +249,10 @@ enum Drag {
     Handle { idx: usize, handle: usize },
     /// Zuschneiderahmen: `grip` = Kante/Ecke (−1/0/1 je Achse), `None` = verschieben.
     Crop { grip: Option<(i8, i8)>, orig: Rect, start: Pos2 },
+    /// Neue Markierung aufziehen.
+    MarqueeNew { start: Pos2 },
+    /// Bestehende Markierung ändern (wie beim Zuschneiderahmen).
+    Marquee { grip: Option<(i8, i8)>, orig: Rect, start: Pos2 },
 }
 
 pub struct Editor {
@@ -268,6 +282,14 @@ pub struct Editor {
     resize_pct: f32,
     /// Zuletzt gewähltes Werkzeug je Gruppe (Gruppenname → Werkzeug).
     group_last: HashMap<&'static str, Tool>,
+    /// Markierter Bildbereich (Bildpixel), Werkzeug „Markieren“.
+    marquee: Option<Rect>,
+    /// Texturen der Bildstücke (Schlüssel: `Piece::key`).
+    piece_tex: HashMap<usize, TextureHandle>,
+    /// Schachbrett für transparente Bereiche.
+    checker: Option<TextureHandle>,
+    /// Bild, das die App in die Zwischenablage legen soll (Ausschneiden/Kopieren im Editor).
+    pub clipboard_out: Option<RgbaImage>,
 }
 
 fn c32(c: Rgba) -> Color32 {
@@ -313,6 +335,10 @@ impl Editor {
             last_change: Instant::now(),
             resize_pct: 50.0,
             group_last: HashMap::new(),
+            marquee: None,
+            piece_tex: HashMap::new(),
+            checker: None,
+            clipboard_out: None,
         }
     }
 
@@ -341,6 +367,7 @@ impl Editor {
             self.crop = Some(self.full_rect());
             self.crop_aspect = None;
         }
+        self.marquee = None;
         self.changed();
     }
 
@@ -396,6 +423,24 @@ impl Editor {
         !self.redo.is_empty()
     }
 
+    /// ⌘D: markierten Bereich oder ausgewähltes Objekt duplizieren.
+    pub fn duplicate(&mut self) {
+        if self.marquee.is_some() {
+            self.duplicate_marquee();
+        } else {
+            self.duplicate_selected();
+        }
+    }
+
+    /// ⌫: markierten Bereich leeren oder ausgewähltes Objekt löschen.
+    pub fn delete(&mut self) {
+        if self.marquee.is_some() {
+            self.delete_marquee();
+        } else {
+            self.delete_selected();
+        }
+    }
+
     pub fn duplicate_selected(&mut self) {
         if let Some(i) = self.selected.filter(|i| *i < self.doc.annotations.len()) {
             self.push_undo();
@@ -446,6 +491,9 @@ impl Editor {
         // Zuschneiden startet mit einem Rahmen um das ganze Bild.
         self.crop = (t == Tool::Crop).then(|| self.full_rect());
         self.crop_aspect = None;
+        if t != Tool::Marquee {
+            self.marquee = None;
+        }
         if t != Tool::Select {
             self.selected = None;
         }
@@ -475,12 +523,112 @@ impl Editor {
         self.crop.is_some_and(|c| c != self.full_rect())
     }
 
+    // ---------- Markieren ----------
+
+    /// Ist ein Bereich markiert?
+    pub fn has_marquee(&self) -> bool {
+        self.marquee.is_some()
+    }
+
+    /// Markierung als ganze Pixel innerhalb des Bildes: (x, y, w, h).
+    fn marquee_px(&self) -> Option<(u32, u32, u32, u32)> {
+        let r = self.marquee?.intersect(self.full_rect());
+        let (x0, y0) = (r.min.x.floor().max(0.0) as u32, r.min.y.floor().max(0.0) as u32);
+        let (x1, y1) = (r.max.x.ceil() as u32, r.max.y.ceil() as u32);
+        let (x1, y1) = (x1.min(self.doc.image.width()), y1.min(self.doc.image.height()));
+        (x1 > x0 + 1 && y1 > y0 + 1).then(|| (x0, y0, x1 - x0, y1 - y0))
+    }
+
+    /// Pixel des markierten Bereichs – so wie im Bild sichtbar (inkl. Weichzeichnen/Füllen,
+    /// ohne Pfeile/Text, die bleiben eigene Objekte).
+    pub fn marquee_piece(&self) -> Option<RgbaImage> {
+        let (x, y, w, h) = self.marquee_px()?;
+        let base = render::apply_effects(&self.doc.image, &self.doc.annotations);
+        Some(imageops::crop_imm(&base, x, y, w, h).to_image())
+    }
+
+    /// Markierten Bereich im Bild transparent machen.
+    fn erase_marquee_pixels(&mut self) {
+        let Some((x, y, w, h)) = self.marquee_px() else { return };
+        let mut img = (*self.doc.image).clone();
+        for py in y..y + h {
+            for px in x..x + w {
+                img.put_pixel(px, py, image::Rgba([0, 0, 0, 0]));
+            }
+        }
+        self.replace_image(img);
+    }
+
+    /// Ausschneiden: Bereich entfernen (wird transparent). Gibt die Pixel für die Zwischenablage zurück.
+    pub fn cut_marquee(&mut self) -> Option<RgbaImage> {
+        let piece = self.marquee_piece()?;
+        self.push_undo();
+        self.erase_marquee_pixels();
+        self.marquee = None;
+        Some(piece)
+    }
+
+    /// Löschen: Bereich entfernen, ohne Zwischenablage.
+    pub fn delete_marquee(&mut self) {
+        if self.marquee_px().is_some() {
+            self.push_undo();
+            self.erase_marquee_pixels();
+            self.marquee = None;
+        }
+    }
+
+    /// Duplizieren: Kopie des Bereichs als verschiebbares Bildstück, leicht versetzt.
+    pub fn duplicate_marquee(&mut self) {
+        let Some((x, y, ..)) = self.marquee_px() else { return };
+        let Some(piece) = self.marquee_piece() else { return };
+        self.insert_piece(piece, Pos2::new(x as f32 + 20.0, y as f32 + 20.0));
+    }
+
+    /// Bild auf die Markierung zuschneiden.
+    pub fn crop_to_marquee(&mut self) {
+        if let Some((x, y, w, h)) = self.marquee_px() {
+            self.crop = Some(Rect::from_min_size(Pos2::new(x as f32, y as f32), Vec2::new(w as f32, h as f32)));
+            self.marquee = None;
+            self.apply_crop();
+        }
+    }
+
+    /// Bild (z. B. aus der Zwischenablage) als Bildstück einfügen: an der Markierung,
+    /// sonst in der Bildmitte. Danach ist es ausgewählt und lässt sich verschieben.
+    pub fn paste_piece(&mut self, img: RgbaImage) {
+        let size = Vec2::new(img.width() as f32, img.height() as f32);
+        let at = match self.marquee_px() {
+            Some((x, y, ..)) => Pos2::new(x as f32, y as f32),
+            None => (self.full_rect().center() - size / 2.0).max(Pos2::ZERO),
+        };
+        self.insert_piece(img, at);
+    }
+
+    fn insert_piece(&mut self, img: RgbaImage, at: Pos2) {
+        let size = Vec2::new(img.width() as f32, img.height() as f32);
+        self.finish_text();
+        self.push_undo();
+        self.doc.annotations.push(Annotation {
+            shape: Shape::Image { a: p(at), b: p(at + size), img: Piece::new(img) },
+            style: self.styles[&Tool::Marquee].clone(),
+        });
+        self.marquee = None;
+        self.crop = None;
+        self.tool = Tool::Select;
+        self.selected = Some(self.doc.annotations.len() - 1);
+    }
+
     // ---------- Bildoperationen ----------
 
     fn set_image(&mut self, img: RgbaImage) {
+        self.replace_image(img);
+        self.fit = true;
+    }
+
+    /// Bildpixel ersetzen, Ansicht (Zoom/Position) beibehalten.
+    fn replace_image(&mut self, img: RgbaImage) {
         self.doc.image = Arc::new(img);
         self.image_changed = true;
-        self.fit = true;
         self.changed();
     }
 
@@ -513,6 +661,10 @@ impl Editor {
             } else {
                 a.shape.map_points(|q| [q[1], w - q[0]]);
             }
+            // Inhalt von Bildstücken mitdrehen
+            if let Shape::Image { img, .. } = &mut a.shape {
+                *img = Piece::new(if clockwise { imageops::rotate90(&*img.0) } else { imageops::rotate270(&*img.0) });
+            }
         }
         self.set_image(img);
     }
@@ -526,6 +678,10 @@ impl Editor {
                 a.shape.map_points(|q| [w - q[0], q[1]]);
             } else {
                 a.shape.map_points(|q| [q[0], h - q[1]]);
+            }
+            // Inhalt von Bildstücken mitspiegeln
+            if let Shape::Image { img, .. } = &mut a.shape {
+                *img = Piece::new(if horizontal { imageops::flip_horizontal(&*img.0) } else { imageops::flip_vertical(&*img.0) });
             }
         }
         self.set_image(img);
@@ -584,6 +740,34 @@ impl Editor {
         self.tex_key = Some(key);
     }
 
+    /// Texturen für Bildstücke anlegen bzw. nicht mehr benötigte freigeben.
+    fn refresh_piece_textures(&mut self, ctx: &egui::Context) {
+        let pieces: Vec<&Piece> = self
+            .doc
+            .annotations
+            .iter()
+            .filter_map(|a| match &a.shape {
+                Shape::Image { img, .. } => Some(img),
+                _ => None,
+            })
+            .collect();
+        self.piece_tex.retain(|k, _| pieces.iter().any(|p| p.key() == *k));
+        for piece in pieces {
+            self.piece_tex.entry(piece.key()).or_insert_with(|| {
+                let img = &piece.0;
+                let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+                ctx.load_texture(format!("piece-{}", piece.key()), color, TextureOptions::LINEAR)
+            });
+        }
+        if self.checker.is_none() {
+            // 2×2-Schachbrett, gekachelt hinter das Bild gelegt
+            let (a, b) = (Color32::from_gray(204), Color32::from_gray(255));
+            let color = egui::ColorImage::new([2, 2], vec![a, b, b, a]);
+            let opts = TextureOptions { wrap_mode: egui::TextureWrapMode::Repeat, ..TextureOptions::NEAREST };
+            self.checker = Some(ctx.load_texture("checker", color, opts));
+        }
+    }
+
     // ---------- Panels ----------
 
     /// Werkzeug, Stile und Gruppenwahl aus dem vorherigen Editor übernehmen.
@@ -596,7 +780,14 @@ impl Editor {
     pub fn properties_ui(&mut self, ui: &mut Ui) {
         let sel = self.selected.filter(|i| *i < self.doc.annotations.len());
         let kind = sel.map(|i| Tool::of(&self.doc.annotations[i].shape)).unwrap_or(self.tool);
-        ui.heading(if sel.is_some() { format!("{} (Auswahl)", kind.name()) } else { kind.name().to_string() });
+        let piece_sel = sel.is_some_and(|i| matches!(self.doc.annotations[i].shape, Shape::Image { .. }));
+        ui.heading(if piece_sel {
+            "Bildstück (Auswahl)".to_string()
+        } else if sel.is_some() {
+            format!("{} (Auswahl)", kind.name())
+        } else {
+            kind.name().to_string()
+        });
         // Varianten einer Werkzeuggruppe (z. B. Rechteck/Ellipse/Linie)
         if sel.is_none() {
             if let Some(g) = group_of(self.tool).filter(|g| g.tools.len() > 1) {
@@ -645,6 +836,34 @@ impl Editor {
                 self.crop = Some(self.full_rect());
                 self.crop_aspect = None;
             }
+        } else if kind == Tool::Marquee && sel.is_none() {
+            ui.label("Bereich im Bild aufziehen. Rahmen an Ecken/Kanten anpassen oder im Inneren verschieben.");
+            ui.weak("Text und Pfeile bleiben eigene Objekte und werden nicht mit ausgeschnitten.");
+            if let Some((_, _, w, h)) = self.marquee_px() {
+                ui.label(RichText::new(format!("{w} × {h} px")).strong());
+            }
+            ui.add_space(6.0);
+            let on = self.marquee_px().is_some();
+            let wide = Vec2::new(ui.available_width(), 30.0);
+            ui.add_enabled_ui(on, |ui| {
+                if ui.add(egui::Button::new("✂  Ausschneiden   ⌘X").min_size(wide)).clicked() {
+                    self.clipboard_out = self.cut_marquee();
+                }
+                if ui.add(egui::Button::new("⧉  Kopieren   ⌘C").min_size(wide)).clicked() {
+                    self.clipboard_out = self.marquee_piece();
+                }
+                if ui.add(egui::Button::new("⊕  Duplizieren   ⌘D").min_size(wide)).clicked() {
+                    self.duplicate_marquee();
+                }
+                if ui.add(egui::Button::new("🗑  Löschen   ⌫").min_size(wide)).clicked() {
+                    self.delete_marquee();
+                }
+                if ui.add(egui::Button::new("⛶  Auf Auswahl zuschneiden").min_size(wide)).clicked() {
+                    self.crop_to_marquee();
+                }
+            });
+            ui.add_space(4.0);
+            ui.weak("⌘V fügt ein Bild aus der Zwischenablage als verschiebbares Bildstück ein.");
         } else if kind != Tool::Select {
             let original = sel.map(|i| self.doc.annotations[i].style.clone()).unwrap_or_else(|| self.styles[&kind].clone());
             let mut st = original.clone();
@@ -669,6 +888,20 @@ impl Editor {
                         self.delete_selected();
                     }
                 });
+                // Bildstück auf 1:1-Pixelgröße zurücksetzen
+                let mut reset = None;
+                if let Shape::Image { a, b, img } = &self.doc.annotations[i].shape {
+                    let natural = [a[0] + img.0.width() as f32, a[1] + img.0.height() as f32];
+                    if *b != natural && ui.button("↺ Originalgröße").clicked() {
+                        reset = Some(natural);
+                    }
+                }
+                if let Some(natural) = reset {
+                    self.push_undo();
+                    if let Shape::Image { b, .. } = &mut self.doc.annotations[i].shape {
+                        *b = natural;
+                    }
+                }
             }
         } else {
             ui.label("Objekt anklicken zum Auswählen, ziehen zum Verschieben, Griffe zum Ändern der Größe.");
@@ -762,15 +995,16 @@ impl Editor {
                 self.redo();
             }
             if ctx.input(|i| i.key_pressed(Key::D)) {
-                self.duplicate_selected();
+                self.duplicate();
             }
             return;
         }
         if ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) {
-            self.delete_selected();
+            self.delete();
         }
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.selected = None;
+            self.marquee = None;
             if self.tool == Tool::Crop {
                 self.cancel_crop();
             }
@@ -844,6 +1078,7 @@ impl Editor {
     pub fn canvas_ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.refresh_texture(&ctx);
+        self.refresh_piece_textures(&ctx);
         let avail = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(avail, Sense::click_and_drag());
         let ppp = ctx.pixels_per_point();
@@ -910,6 +1145,14 @@ impl Editor {
                     crop_grip(cr, to_scr(start), self.crop_aspect.is_some())
                         .map(|grip| Drag::Crop { grip, orig: c, start })
                 }),
+                // Markierung anpassen, wenn auf Rahmen/Inneres gezogen wird, sonst neu aufziehen
+                Tool::Marquee => self
+                    .marquee
+                    .and_then(|m| {
+                        let mr = Rect::from_min_max(to_scr(m.min), to_scr(m.max));
+                        crop_grip(mr, to_scr(start), false).map(|grip| Drag::Marquee { grip, orig: m, start })
+                    })
+                    .or(Some(Drag::MarqueeNew { start })),
                 Tool::Text | Tool::Step | Tool::Fill => None,
                 t => {
                     let shape = new_shape(t, p(start));
@@ -931,13 +1174,37 @@ impl Editor {
                     }
                     Drag::Handle { idx, handle } => {
                         if let Some(a) = self.doc.annotations.get_mut(*idx) {
-                            a.shape.set_handle(*handle, cur);
+                            // Bildstücke behalten ihr Seitenverhältnis (⇧ = frei verzerren)
+                            let target = match &a.shape {
+                                Shape::Image { img, .. } if !shift => {
+                                    let anchor = a.shape.handles()[(*handle + 2) % 4];
+                                    keep_aspect(anchor, cur, img.0.width() as f32 / img.0.height() as f32)
+                                }
+                                _ => cur,
+                            };
+                            a.shape.set_handle(*handle, target);
                         }
                     }
                     Drag::Crop { grip, orig, start } => {
                         let bounds = Rect::from_min_size(Pos2::ZERO, size);
                         let aspect = self.crop_aspect.or(shift.then(|| orig.width() / orig.height()));
                         self.crop = Some(drag_crop(*orig, *grip, cur - *start, bounds, aspect));
+                    }
+                    Drag::MarqueeNew { start } => {
+                        let bounds = Rect::from_min_size(Pos2::ZERO, size);
+                        let mut end = cur;
+                        if shift {
+                            let d = cur - *start;
+                            let m = d.x.abs().max(d.y.abs());
+                            end = *start + Vec2::new(m * d.x.signum(), m * d.y.signum());
+                        }
+                        let r = Rect::from_two_pos(*start, end).intersect(bounds);
+                        self.marquee = Some(Rect::from_min_max(r.min.round(), r.max.round()));
+                    }
+                    Drag::Marquee { grip, orig, start } => {
+                        let bounds = Rect::from_min_size(Pos2::ZERO, size);
+                        let aspect = shift.then(|| orig.width() / orig.height());
+                        self.marquee = Some(drag_crop(*orig, *grip, cur - *start, bounds, aspect));
                     }
                 }
             }
@@ -957,8 +1224,21 @@ impl Editor {
                     self.push_snapshot(snap);
                 }
             }
+            // Zu kleine Markierungen verwerfen (versehentliches Klicken/Ziehen)
+            if self.marquee.is_some_and(|m| m.width() < 2.0 || m.height() < 2.0) {
+                self.marquee = None;
+            }
             self.drag = None;
             self.drag_snapshot = None;
+        }
+
+        // Klick außerhalb der Markierung hebt sie auf
+        if resp.clicked_by(PointerButton::Primary) && self.tool == Tool::Marquee {
+            if let (Some(m), Some(ptr)) = (self.marquee, pointer) {
+                if !m.contains(to_img(ptr)) {
+                    self.marquee = None;
+                }
+            }
         }
 
         if resp.clicked_by(PointerButton::Primary) {
@@ -1023,11 +1303,14 @@ impl Editor {
                     }
                 }
                 Tool::Text => egui::CursorIcon::Text,
-                Tool::Crop => {
+                Tool::Crop | Tool::Marquee => {
+                    let frame = if self.tool == Tool::Crop { self.crop } else { self.marquee };
                     let grip = match &self.drag {
-                        Some(Drag::Crop { grip, .. }) => Some(*grip),
-                        _ => self.crop.zip(pointer).and_then(|(c, ptr)| {
-                            crop_grip(Rect::from_min_max(to_scr(c.min), to_scr(c.max)), ptr, self.crop_aspect.is_some())
+                        Some(Drag::Crop { grip, .. } | Drag::Marquee { grip, .. }) => Some(*grip),
+                        Some(Drag::MarqueeNew { .. }) => None,
+                        _ => frame.zip(pointer).and_then(|(c, ptr)| {
+                            let locked = self.tool == Tool::Crop && self.crop_aspect.is_some();
+                            crop_grip(Rect::from_min_max(to_scr(c.min), to_scr(c.max)), ptr, locked)
                         }),
                     };
                     match grip {
@@ -1060,6 +1343,12 @@ impl Editor {
         if let Some((_, c)) = fx.border {
             painter.rect_filled(outer, CornerRadius::same(radius.min(255.0) as u8), c32(c));
         }
+        // Schachbrett hinter dem Bild macht transparente (ausgeschnittene) Bereiche sichtbar
+        if let (Some(chk), None) = (&self.checker, fx.border) {
+            let tile = 16.0; // Bildschirmpunkte je 2×2-Kachel
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(img_rect.width() / tile, img_rect.height() / tile));
+            painter.image(chk.id(), img_rect, uv, Color32::WHITE);
+        }
         if let Some(tex) = &self.tex {
             let inner_r = if fx.border.is_some() { 0.0 } else { radius };
             egui::Image::new(egui::load::SizedTexture::new(tex.id(), img_rect.size()))
@@ -1070,9 +1359,9 @@ impl Editor {
         let clip = painter.with_clip_rect(avail.intersect(img_rect.expand(2000.0)));
         for a in render::draw_order(&self.doc.annotations) {
             if render::casts_shadow(a) {
-                paint_annotation(&clip, a, img_rect, zoom, true);
+                paint_annotation(&clip, a, img_rect, zoom, true, &self.piece_tex);
             }
-            paint_annotation(&clip, a, img_rect, zoom, false);
+            paint_annotation(&clip, a, img_rect, zoom, false, &self.piece_tex);
         }
         // Effekt-Bereiche im Auswahlmodus andeuten
         if self.tool == Tool::Select {
@@ -1092,9 +1381,9 @@ impl Editor {
         }
         if let Some(Drag::Create { ann, .. }) = &self.drag {
             if render::casts_shadow(ann) {
-                paint_annotation(&clip, ann, img_rect, zoom, true);
+                paint_annotation(&clip, ann, img_rect, zoom, true, &self.piece_tex);
             }
-            paint_annotation(&clip, ann, img_rect, zoom, false);
+            paint_annotation(&clip, ann, img_rect, zoom, false, &self.piece_tex);
             if ann.shape.is_effect() {
                 let r = bounds(ann);
                 clip.rect_stroke(
@@ -1189,6 +1478,66 @@ impl Editor {
                 self.apply_crop();
             } else if cancel {
                 self.cancel_crop();
+            }
+        }
+
+        // Markierung: schwarz-weißer Ameisenrahmen, Griffe, Aktionsleiste
+        if let Some(m) = self.marquee {
+            let mr = Rect::from_min_max(to_scr(m.min), to_scr(m.max));
+            let pts = [mr.left_top(), mr.right_top(), mr.right_bottom(), mr.left_bottom(), mr.left_top()];
+            clip.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.0, Color32::BLACK)));
+            // Weiße Striche wandern mit der Zeit („marching ants“)
+            let t = ctx.input(|i| i.time) as f32;
+            let dashed = egui::Shape::dashed_line_with_offset(&pts, Stroke::new(1.0, Color32::WHITE), &[5.0], &[5.0], (t * 12.0) % 10.0);
+            clip.extend(dashed);
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            if !matches!(self.drag, Some(Drag::MarqueeNew { .. })) {
+                for h in [mr.left_top(), mr.right_top(), mr.left_bottom(), mr.right_bottom(), mr.center_top(), mr.center_bottom(), mr.left_center(), mr.right_center()] {
+                    let hr = Rect::from_center_size(h, Vec2::splat(7.0));
+                    clip.rect_filled(hr, 1.5, Color32::WHITE);
+                    clip.rect_stroke(hr, 1.5, Stroke::new(1.0, Color32::from_gray(60)), StrokeKind::Middle);
+                }
+            }
+            let (w, h) = (m.width() as u32, m.height() as u32);
+            if self.drag.is_none() && w >= 2 && h >= 2 {
+                let below = mr.max.y + 56.0 < avail.max.y;
+                let (anchor, pivot) = if below {
+                    (Pos2::new(mr.center().x, mr.max.y + 12.0), Align2::CENTER_TOP)
+                } else {
+                    (Pos2::new(mr.center().x, mr.max.y - 12.0), Align2::CENTER_BOTTOM)
+                };
+                let mut action = None;
+                egui::Area::new(Id::new("kadra_marquee_bar"))
+                    .order(egui::Order::Foreground)
+                    .pivot(pivot)
+                    .fixed_pos(anchor)
+                    .show(&ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("{w} × {h} px")).monospace());
+                                ui.add_space(4.0);
+                                for (label, tip, act) in [
+                                    ("✂ Ausschneiden", "⌘X", 0),
+                                    ("⧉ Kopieren", "⌘C", 1),
+                                    ("⊕ Duplizieren", "⌘D", 2),
+                                    ("🗑", "Löschen (⌫)", 3),
+                                    ("⛶", "Auf Auswahl zuschneiden", 4),
+                                ] {
+                                    if ui.button(label).on_hover_text(tip).clicked() {
+                                        action = Some(act);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                match action {
+                    Some(0) => self.clipboard_out = self.cut_marquee(),
+                    Some(1) => self.clipboard_out = self.marquee_piece(),
+                    Some(2) => self.duplicate_marquee(),
+                    Some(3) => self.delete_marquee(),
+                    Some(4) => self.crop_to_marquee(),
+                    _ => {}
+                }
             }
         }
 
@@ -1434,6 +1783,99 @@ fn update_shape(shape: &mut Shape, start: Pos2, cur: Pos2, shift: bool, zoom: f3
     }
 }
 
+#[cfg(test)]
+mod marquee_tests {
+    use super::*;
+
+    /// 40×30-Bild: linke Hälfte rot, rechte Hälfte blau.
+    fn editor() -> Editor {
+        let img = RgbaImage::from_fn(40, 30, |x, _| {
+            if x < 20 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) }
+        });
+        let mut ed = Editor::new("t".into(), Document::new(img));
+        ed.set_tool(Tool::Marquee);
+        ed.marquee = Some(Rect::from_min_max(Pos2::new(2.0, 3.0), Pos2::new(12.0, 13.0)));
+        ed
+    }
+
+    #[test]
+    fn cut_erases_area_and_returns_piece() {
+        let mut ed = editor();
+        let piece = ed.cut_marquee().expect("Stück");
+        assert_eq!(piece.dimensions(), (10, 10));
+        assert_eq!(piece.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(ed.doc.image.get_pixel(5, 5).0[3], 0, "Bereich ist transparent");
+        assert_eq!(ed.doc.image.get_pixel(15, 5).0, [255, 0, 0, 255], "außerhalb unverändert");
+        assert!(ed.marquee.is_none());
+        ed.undo();
+        assert_eq!(ed.doc.image.get_pixel(5, 5).0, [255, 0, 0, 255], "Rückgängig stellt Pixel wieder her");
+    }
+
+    #[test]
+    fn duplicate_adds_offset_piece_and_selects_it() {
+        let mut ed = editor();
+        ed.duplicate_marquee();
+        assert_eq!(ed.doc.annotations.len(), 1);
+        match &ed.doc.annotations[0].shape {
+            Shape::Image { a, b, img } => {
+                assert_eq!(*a, [22.0, 23.0]);
+                assert_eq!(*b, [32.0, 33.0]);
+                assert_eq!(img.0.dimensions(), (10, 10));
+            }
+            other => panic!("unerwartet: {other:?}"),
+        }
+        assert_eq!(ed.selected, Some(0));
+        assert_eq!(ed.tool, Tool::Select, "Stück lässt sich direkt verschieben");
+        assert_eq!(ed.doc.image.get_pixel(5, 5).0, [255, 0, 0, 255], "Original bleibt");
+    }
+
+    #[test]
+    fn delete_and_crop_to_marquee() {
+        let mut ed = editor();
+        ed.delete_marquee();
+        assert_eq!(ed.doc.image.get_pixel(5, 5).0[3], 0);
+        let mut ed = editor();
+        ed.crop_to_marquee();
+        assert_eq!(ed.doc.image.dimensions(), (10, 10));
+    }
+
+    #[test]
+    fn marquee_is_clamped_to_image() {
+        let mut ed = editor();
+        ed.marquee = Some(Rect::from_min_max(Pos2::new(35.0, 25.0), Pos2::new(90.0, 90.0)));
+        assert_eq!(ed.marquee_px(), Some((35, 25, 5, 5)));
+    }
+
+    #[test]
+    fn piece_survives_save_format_and_renders() {
+        let mut ed = editor();
+        ed.duplicate_marquee();
+        let json = serde_json::to_string(&ed.doc.annotations).unwrap();
+        let back: Vec<Annotation> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ed.doc.annotations, "Bildstück übersteht Speichern/Laden");
+        // Duplikat (rot) liegt auf blauem Bereich bei (22..32, 23..30) → im Export rot
+        let out = render::render(&ed.doc);
+        assert_eq!(out.get_pixel(25, 25).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn image_handle_keeps_aspect() {
+        let c = keep_aspect(Pos2::ZERO, Pos2::new(40.0, 5.0), 2.0);
+        assert_eq!(c, Pos2::new(40.0, 20.0));
+    }
+}
+
+/// Ecke für ein Bildstück mit festem Seitenverhältnis `aspect` (Breite/Höhe),
+/// gegenüber dem festen Punkt `anchor` in Richtung `cur`.
+fn keep_aspect(anchor: Pos2, cur: Pos2, aspect: f32) -> Pos2 {
+    let d = cur - anchor;
+    let w = d.x.abs().max(d.y.abs() * aspect).max(4.0);
+    let h = w / aspect;
+    let sx = if d.x < 0.0 { -1.0 } else { 1.0 };
+    let sy = if d.y < 0.0 { -1.0 } else { 1.0 };
+    anchor + Vec2::new(sx * w, sy * h)
+}
+
 pub fn bounds(a: &Annotation) -> Rect {
     let w = a.style.width / 2.0;
     match &a.shape {
@@ -1443,7 +1885,8 @@ pub fn bounds(a: &Annotation) -> Rect {
         | Shape::Blur { a: pa, b }
         | Shape::Pixelate { a: pa, b }
         | Shape::Redact { a: pa, b }
-        | Shape::Spotlight { a: pa, b } => rect(*pa, *b),
+        | Shape::Spotlight { a: pa, b }
+        | Shape::Image { a: pa, b, .. } => rect(*pa, *b),
         Shape::Pen { pts } => {
             let mut r = Rect::NOTHING;
             for q in pts {
@@ -1494,7 +1937,14 @@ fn hit_test(a: &Annotation, q: Pos2, tol: f32) -> bool {
     }
 }
 
-pub fn paint_annotation(painter: &Painter, a: &Annotation, img_rect: Rect, zoom: f32, shadow: bool) {
+pub fn paint_annotation(
+    painter: &Painter,
+    a: &Annotation,
+    img_rect: Rect,
+    zoom: f32,
+    shadow: bool,
+    pieces: &HashMap<usize, TextureHandle>,
+) {
     let off = if shadow { render::shadow_offset(a) } else { 0.0 };
     let tr = |q: P| img_rect.min + Vec2::new(q[0] + off, q[1] + off) * zoom;
     let st = &a.style;
@@ -1584,12 +2034,21 @@ pub fn paint_annotation(painter: &Painter, a: &Annotation, img_rect: Rect, zoom:
                 painter.rect_filled(Rect::from_min_max(Pos2::new(s.max.x, s.min.y), Pos2::new(o.max.x, s.max.y)), 0.0, dim);
             }
         }
+        Shape::Image { a: pa, b, img } => {
+            let r = rr(*pa, *b);
+            if shadow {
+                painter.rect_filled(r, 0.0, shadow_col);
+            } else if let Some(tex) = pieces.get(&img.key()) {
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                painter.image(tex.id(), r, uv, Color32::WHITE);
+            }
+        }
         Shape::Blur { .. } | Shape::Pixelate { .. } | Shape::Fill { .. } => {}
     }
 }
 
 fn style_ui(ui: &mut Ui, kind: Tool, st: &mut Style) {
-    let has_color = !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Spotlight);
+    let has_color = !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Marquee);
     if has_color {
         ui.horizontal(|ui| {
             ui.label("Farbe");

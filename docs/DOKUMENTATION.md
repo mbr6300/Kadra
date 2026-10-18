@@ -57,6 +57,7 @@ Werkzeuge in der oberen Leiste (Taste in Klammern):
 | Werkzeug | Funktion |
 |---|---|
 | Auswahl (V) | Objekte wählen, verschieben, über Griffe skalieren; Pfeiltasten verschieben (⇧ = 10 px) |
+| Markieren (M) | Bildbereich aufziehen (⇧ = Quadrat), Rahmen anpassen/verschieben; dann **Ausschneiden** ⌘X (Bereich wird transparent, Inhalt in die Zwischenablage), **Kopieren** ⌘C, **Duplizieren** ⌘D (verschiebbares Bildstück), **Löschen** ⌫ oder **Auf Auswahl zuschneiden** – über die Leiste unter der Markierung, das Eigenschaften-Panel oder das Menü Bearbeiten. Esc hebt die Markierung auf. |
 | Pfeil (A) | Pfeil mit Spitze; ⇧ rastet auf 45° |
 | Text (T) | Text mit optionalem Hintergrund; Doppelklick zum Bearbeiten |
 | Formen: Rechteck (R), Ellipse (E), Linie (L) | Mit/ohne Füllung; ⇧ = Quadrat/Kreis bzw. 45° |
@@ -119,7 +120,12 @@ Ist Kadra aktiv, stehen oben in der Menüleiste die üblichen macOS-Menüs berei
 | **Fenster** | Im Dock ablegen ⌘M, Zoomen, Alle nach vorne bringen |
 | **Hilfe** | Dokumentation, Tastenkürzel, Kadra auf GitHub, Problem melden |
 
-⌘V fügt jetzt auch reine Bilder aus der Zwischenablage ein.
+⌘V fügt Bilder aus der Zwischenablage ein: bei offenem Bild als **verschiebbares Bildstück**
+(an der Markierung bzw. in der Mitte), sonst als neue Aufnahme. Bildstücke lassen sich wie andere
+Objekte verschieben und an den Ecken skalieren (Seitenverhältnis bleibt, ⇧ = frei verzerren);
+„Originalgröße“ im Eigenschaften-Panel setzt sie auf 1:1 zurück. Ausschneiden + Einfügen = Bereich
+verschieben. Transparente (ausgeschnittene) Bereiche zeigt der Editor als Schachbrett; JPEG/BMP/PDF
+exportieren sie weiß.
 
 ### 2.7 Einstellungen
 

@@ -36,6 +36,53 @@ pub enum Shape {
     Spotlight { a: P, b: P },
     /// Farbeimer: füllt die zusammenhängende Fläche ab `pos` (Toleranz = style.width).
     Fill { pos: P },
+    /// Eingefügtes Bildstück (duplizierter Bereich oder aus der Zwischenablage), skaliert auf a–b.
+    Image { a: P, b: P, img: Piece },
+}
+
+/// Pixel eines Bildstücks. Geteilt (billig zu klonen für Undo); gespeichert als PNG in Base64.
+#[derive(Clone)]
+pub struct Piece(pub Arc<RgbaImage>);
+
+impl Piece {
+    pub fn new(img: RgbaImage) -> Self {
+        Self(Arc::new(img))
+    }
+    /// Stabiler Schlüssel für Textur-Caches.
+    pub fn key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+}
+
+impl PartialEq for Piece {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+
+impl std::fmt::Debug for Piece {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Piece({}×{})", self.0.width(), self.0.height())
+    }
+}
+
+impl Serialize for Piece {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine;
+        let mut png = std::io::Cursor::new(Vec::new());
+        self.0.write_to(&mut png, image::ImageFormat::Png).map_err(serde::ser::Error::custom)?;
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
+    }
+}
+
+impl<'de> Deserialize<'de> for Piece {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use base64::Engine;
+        let b64 = String::deserialize(d)?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(serde::de::Error::custom)?;
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map_err(serde::de::Error::custom)?;
+        Ok(Piece::new(img.to_rgba8()))
+    }
 }
 
 impl Shape {
@@ -60,7 +107,8 @@ impl Shape {
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
             | Shape::Redact { a, b }
-            | Shape::Spotlight { a, b } => {
+            | Shape::Spotlight { a, b }
+            | Shape::Image { a, b, .. } => {
                 mv(a);
                 mv(b);
             }
@@ -79,7 +127,8 @@ impl Shape {
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
             | Shape::Redact { a, b }
-            | Shape::Spotlight { a, b } => {
+            | Shape::Spotlight { a, b }
+            | Shape::Image { a, b, .. } => {
                 vec![pos(*a), Pos2::new(b[0], a[1]), pos(*b), Pos2::new(a[0], b[1])]
             }
             _ => vec![],
@@ -101,7 +150,8 @@ impl Shape {
             | Shape::Blur { a, b }
             | Shape::Pixelate { a, b }
             | Shape::Redact { a, b }
-            | Shape::Spotlight { a, b } => match idx {
+            | Shape::Spotlight { a, b }
+            | Shape::Image { a, b, .. } => match idx {
                 0 => *a = p(q),
                 1 => {
                     b[0] = q.x;
