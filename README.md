@@ -43,7 +43,7 @@ Zusätzlich: Verzögerung (1–10 s), Bild aus Zwischenablage, Datei öffnen, Dr
 ## Nachbearbeitung
 
 Werkzeuge (Taste): Auswahl (V), Pfeil (A), Linie (L), Rechteck (R), Ellipse (E), Stift (P),
-Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Spotlight (S), Füllen (F), Zuschneiden (C).
+Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Schwärzen (K), Spotlight (S), Füllen (F), Zuschneiden (C).
 
 - Füllen (Farbeimer): füllt die zusammenhängende Fläche ähnlicher Farbe; Toleranz und Farbe (inkl. Transparenz) bleiben nachträglich änderbar
 

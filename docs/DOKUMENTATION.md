@@ -63,7 +63,7 @@ Werkzeuge in der oberen Leiste (Taste in Klammern):
 | Nummer (N) | Fortlaufende Schritt-Nummern (①②③ …) |
 | Marker (H) | Halbtransparenter Textmarker |
 | Füllen (F) | Farbeimer: füllt zusammenhängende Fläche ähnlicher Farbe (Toleranz einstellbar) |
-| Unkenntlich: Weichzeichnen (B), Verpixeln (X) | Bereiche unkenntlich machen, Stärke einstellbar |
+| Unkenntlich: Weichzeichnen (B), Verpixeln (X), Schwärzen (K) | Bereiche unkenntlich machen; für vertrauliche Daten Schwärzen (deckender Balken) verwenden |
 | Zuschneiden (C) | Rahmen mit 8 Griffen verkleinern/verschieben, Formate (Frei, Original, 1:1, 4:3, 16:9), mit Enter bestätigen |
 | Mehr: Stift (P), Spotlight (S) | Freihand; Bereich hervorheben, Rest abdunkeln |
 
@@ -135,7 +135,7 @@ Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings
 |---|---|
 | Global (Standard) | ⌃⇧1 Bereich · ⌃⇧2 Fenster · ⌃⇧3 Bildschirm · ⌃⇧4 Alle Bildschirme |
 | Overlay | Tab/⇧Tab Fenster dahinter · L Fensterliste · Enter ganzer Bildschirm · Esc Abbrechen |
-| Editor-Werkzeuge | V A T R E L N H F B X C P S |
+| Editor-Werkzeuge | V A T R E L N H F B X K C P S |
 | Bearbeiten | ⌘Z / ⌘⇧Z · ⌘D · ⌫ · Pfeiltasten · Esc |
 | Datei | ⌘C Kopieren · ⌘S Speichern · ⌘⇧S Speichern unter · ⌘O Öffnen |
 

@@ -14,6 +14,9 @@ mod render;
 mod tray;
 mod ui_kit;
 
+/// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ & Co.; Ersatzschrift in Editor und Export.
+pub const SYMBOL_FONT_PATH: &str = "/System/Library/Fonts/Apple Symbols.ttf";
+
 fn main() -> eframe::Result {
     // Eigenes Icon setzen – sonst ersetzt eframe das Dock-Symbol durch sein Standard-Logo.
     let size = 512;

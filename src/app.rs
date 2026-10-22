@@ -1,6 +1,6 @@
 //! Hauptanwendung: Aufnahme-Ablauf, Bibliothek, Editor-Layout.
 
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Vec2, ViewportCommand};
@@ -32,7 +32,8 @@ pub struct KadraApp {
     phase: Phase,
     saved_window: Option<(egui::Pos2, Vec2)>,
     status: Option<(String, Instant)>,
-    thumb_tx: Sender<(String, RgbaImage)>,
+    /// Schreibt alle Änderungen an der Bibliothek nacheinander im Hintergrund.
+    saver: library::Saver,
     thumb_rx: Receiver<(String, RgbaImage)>,
     hotkeys: Option<Hotkeys>,
     hotkey_rx: Receiver<u32>,
@@ -61,6 +62,8 @@ pub struct KadraApp {
     /// „Kadra beenden“ gewählt – Schließen nicht mehr abfangen.
     quitting: bool,
     show_background_hint: bool,
+    /// Kopieren/Exportieren im Hintergrund.
+    jobs: Jobs,
 }
 
 const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗔", "🖵", "🖥"];
@@ -98,7 +101,7 @@ struct ToolbarLayout {
 
 /// macOS-Systemschrift mit ⌃ ⌥ ⇧ ⌘ als Ersatz anhängen (fehlen in den egui-Schriften).
 fn install_symbol_font(ctx: &egui::Context) {
-    let Ok(bytes) = std::fs::read("/System/Library/Fonts/Apple Symbols.ttf") else { return };
+    let Ok(bytes) = std::fs::read(crate::SYMBOL_FONT_PATH) else { return };
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert("symbols".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -133,7 +136,7 @@ impl KadraApp {
             phase: Phase::Normal,
             saved_window: None,
             status: None,
-            thumb_tx,
+            saver: library::Saver::new(thumb_tx, cc.egui_ctx.clone()),
             thumb_rx,
             hotkeys,
             hotkey_rx,
@@ -154,6 +157,7 @@ impl KadraApp {
             hidden_before_capture: false,
             quitting: false,
             show_background_hint: false,
+            jobs: Jobs::new(&cc.egui_ctx),
         };
         menu::install_handler(&cc.egui_ctx, menu_tx);
         let shortcuts = app.active_shortcuts();
@@ -276,14 +280,7 @@ impl KadraApp {
             match action {
                 Action::Capture(kind) => self.start_capture(ctx, kind),
                 Action::Show => self.show_window(ctx),
-                Action::CopyLast => {
-                    if self.editor.is_none() {
-                        if let Some(id) = self.items.first().map(|i| i.id.clone()) {
-                            self.open_item(&id);
-                        }
-                    }
-                    self.copy();
-                }
+                Action::CopyLast => self.copy_last(),
                 Action::Settings => {
                     self.show_settings = true;
                     self.show_window(ctx);
@@ -339,9 +336,14 @@ impl KadraApp {
 
     fn poll_capture(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let Phase::Capturing(rx) = &self.phase else { return };
-        let Ok(res) = rx.try_recv() else {
-            ctx.request_repaint_after(Duration::from_millis(100));
-            return;
+        let res = match rx.try_recv() {
+            Ok(res) => res,
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            // Aufnahme-Thread ist abgestürzt – sonst bliebe Kadra unsichtbar im Aufnahmezustand hängen.
+            Err(TryRecvError::Disconnected) => Err("Aufnahme abgebrochen".to_string()),
         };
         match res {
             Err(e) => {
@@ -394,6 +396,8 @@ impl KadraApp {
             return;
         }
         self.flush_save(true);
+        // Noch ausstehende Schreibvorgänge abwarten (z. B. das PNG einer eben gemachten Aufnahme).
+        self.saver.wait();
         match library::load(id) {
             Ok(doc) => {
                 let mut ed = Editor::new(id.to_string(), doc);
@@ -414,49 +418,76 @@ impl KadraApp {
         }
         ed.dirty = false;
         let image_changed = std::mem::take(&mut ed.image_changed);
-        let (id, doc, tx) = (ed.id.clone(), ed.doc.clone(), self.thumb_tx.clone());
-        std::thread::spawn(move || {
-            if let Ok(thumb) = library::save(&id, &doc, image_changed) {
-                let _ = tx.send((id, thumb));
-            }
-        });
+        self.saver.save(ed.id.clone(), ed.doc.clone(), image_changed);
     }
 
     // ---------- Export ----------
 
-    fn rendered(&self) -> Option<RgbaImage> {
-        self.editor.as_ref().map(|e| render::render(&e.doc))
+    /// Kopie des aktuellen Dokuments (das Rendern passiert dann im Hintergrund).
+    fn current_doc(&self) -> Option<Document> {
+        self.editor.as_ref().map(|e| e.doc.clone())
+    }
+
+    /// Rendern und Schreiben laufen im Export-Thread, damit das Fenster bei großen Bildern
+    /// nicht einfriert; das Ergebnis erscheint als Statusmeldung.
+    fn run_job(&mut self, busy: &str, job: impl FnOnce() -> String + Send + 'static) {
+        self.notify(busy);
+        self.jobs.run(Box::new(job));
     }
 
     fn copy(&mut self) {
-        if let Some(img) = self.rendered() {
-            match copy_to_clipboard(&img) {
-                Ok(()) => self.notify("In die Zwischenablage kopiert"),
-                Err(e) => self.notify(format!("Zwischenablage: {e}")),
-            }
+        let Some(doc) = self.current_doc() else { return };
+        self.run_job("Wird kopiert …", move || match copy_to_clipboard(&render::render(&doc)) {
+            Ok(()) => "In die Zwischenablage kopiert".into(),
+            Err(e) => format!("Zwischenablage: {e}"),
+        });
+    }
+
+    /// Neueste Aufnahme der Bibliothek kopieren – unabhängig davon, welches Bild gerade offen ist.
+    fn copy_last(&mut self) {
+        let Some(id) = self.items.first().map(|i| i.id.clone()) else {
+            self.notify("Keine Aufnahme in der Bibliothek");
+            return;
+        };
+        if self.editor.as_ref().is_some_and(|e| e.id == id) {
+            // Offener Editor hat den aktuellsten (evtl. noch ungespeicherten) Stand.
+            self.copy();
+            return;
         }
+        self.saver.wait();
+        self.run_job("Wird kopiert …", move || {
+            match library::load(&id).and_then(|doc| copy_to_clipboard(&render::render(&doc))) {
+                Ok(()) => "Letzte Aufnahme in die Zwischenablage kopiert".into(),
+                Err(e) => format!("Kopieren fehlgeschlagen: {e}"),
+            }
+        });
     }
 
     fn default_name(ext: &str) -> String {
         format!("Kadra {}.{ext}", chrono::Local::now().format("%Y-%m-%d um %H.%M.%S"))
     }
 
-    fn export_to(&mut self, img: &RgbaImage, path: &std::path::Path) {
-        match library::export(img, path, self.settings.jpeg_quality) {
-            Ok(()) => self.notify(format!("Gespeichert: {}", path.display())),
-            Err(e) => self.notify(format!("Speichern fehlgeschlagen: {e}")),
-        }
+    /// Rendert `doc` im Export-Thread und schreibt es nach `path`.
+    /// `unique` hängt bei bestehender Datei eine Nummer an statt zu überschreiben.
+    fn export_doc(&mut self, doc: Document, path: std::path::PathBuf, quality: u8, unique: bool) {
+        self.run_job("Wird gespeichert …", move || {
+            let path = if unique { library::unique_path(&path) } else { path };
+            match library::export(&render::render(&doc), &path, quality) {
+                Ok(()) => format!("Gespeichert: {}", path.display()),
+                Err(e) => format!("Speichern fehlgeschlagen: {e}"),
+            }
+        });
     }
 
     fn quick_save(&mut self) {
-        let Some(img) = self.rendered() else { return };
+        let Some(doc) = self.current_doc() else { return };
         let path = self.settings.save_dir.join(Self::default_name(&self.settings.format));
-        self.export_to(&img, &path);
+        self.export_doc(doc, path, self.settings.jpeg_quality, true);
     }
 
     /// Speichern-Dialog; mit `format` nur dieses Format, sonst alle (Standardformat zuerst).
     fn save_as(&mut self, format: Option<&str>) {
-        let Some(img) = self.rendered() else { return };
+        let Some(doc) = self.current_doc() else { return };
         let ext = format.unwrap_or(&self.settings.format).to_string();
         let _ = std::fs::create_dir_all(&self.settings.save_dir);
         let mut dialog = rfd::FileDialog::new()
@@ -475,8 +506,16 @@ impl KadraApp {
         }
         if library::has_quality(&path) {
             // Qualität vor dem Schreiben abfragen (der Systemdialog kann das nicht).
+            // Das Bild für Größenschätzung und Export wird währenddessen im Hintergrund gerendert.
+            let (tx, img_rx) = channel();
+            let ctx = self.jobs.ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(std::sync::Arc::new(render::render(&doc)));
+                ctx.request_repaint();
+            });
             self.pending_export = Some(PendingExport {
-                img: std::sync::Arc::new(img),
+                img: None,
+                img_rx,
                 path,
                 quality: self.settings.jpeg_quality,
                 remember: false,
@@ -484,7 +523,7 @@ impl KadraApp {
                 requested: None,
             });
         } else {
-            self.export_to(&img, &path);
+            self.export_doc(doc, path, self.settings.jpeg_quality, false);
         }
     }
 
@@ -496,11 +535,14 @@ impl KadraApp {
             }
         }
         let Some(p) = &mut self.pending_export else { return };
+        if p.img.is_none() {
+            p.img = p.img_rx.try_recv().ok();
+        }
         // Größe für die aktuelle Qualität im Hintergrund berechnen
         let dragging = ctx.input(|i| i.pointer.primary_down());
-        if p.requested != Some(p.quality) && !dragging {
+        if let Some(img) = p.img.clone().filter(|_| p.requested != Some(p.quality) && !dragging) {
             p.requested = Some(p.quality);
-            let (img, q, tx, ctx2) = (p.img.clone(), p.quality, self.estimate_tx.clone(), ctx.clone());
+            let (q, tx, ctx2) = (p.quality, self.estimate_tx.clone(), ctx.clone());
             std::thread::spawn(move || {
                 let _ = tx.send((q, library::jpeg_size(&img, q)));
                 ctx2.request_repaint();
@@ -516,7 +558,10 @@ impl KadraApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(RichText::new(&name).strong().size(15.0));
-                ui.weak(format!("{} × {} px", p.img.width(), p.img.height()));
+                match &p.img {
+                    Some(img) => ui.weak(format!("{} × {} px", img.width(), img.height())),
+                    None => ui.weak("Bild wird vorbereitet …"),
+                };
                 ui.add_space(12.0);
                 egui::Grid::new("export_opts").num_columns(2).spacing([16.0, 14.0]).show(ui, |ui| {
                     ui.label("Qualität");
@@ -548,7 +593,7 @@ impl KadraApp {
                 ui.checkbox(&mut p.remember, "Als Standard merken (auch für Schnellspeichern)");
                 ui.add_space(6.0);
                 ui.separator();
-                (save, cancel) = ui_kit::dialog_buttons(ui, "Speichern", true);
+                (save, cancel) = ui_kit::dialog_buttons(ui, "Speichern", p.img.is_some());
             });
         if save {
             let p = self.pending_export.take().unwrap();
@@ -556,10 +601,11 @@ impl KadraApp {
                 self.settings.jpeg_quality = p.quality;
                 self.settings.save();
             }
-            match library::export(&p.img, &p.path, p.quality) {
-                Ok(()) => self.notify(format!("Gespeichert: {}", p.path.display())),
-                Err(e) => self.notify(format!("Speichern fehlgeschlagen: {e}")),
-            }
+            let Some(img) = p.img else { return };
+            self.run_job("Wird gespeichert …", move || match library::export(&img, &p.path, p.quality) {
+                Ok(()) => format!("Gespeichert: {}", p.path.display()),
+                Err(e) => format!("Speichern fehlgeschlagen: {e}"),
+            });
         } else if cancel {
             self.pending_export = None;
         }
@@ -807,19 +853,22 @@ impl KadraApp {
     /// Aufnahme sofort löschen; ein paar Sekunden lang per „Rückgängig“ zurückholbar.
     fn delete_item(&mut self, id: &str) {
         let Some(index) = self.items.iter().position(|i| i.id == id) else { return };
-        if self.editor.as_ref().is_some_and(|e| e.id == id) {
-            // Ohne Speichern schließen – die Aufnahme wird ja gelöscht.
-            self.editor = None;
+        if let Some(ed) = self.editor.take_if(|e| e.id == id) {
+            // Letzten Stand trotzdem sichern, damit „Rückgängig“ ihn vollständig zurückbringt.
+            if ed.dirty {
+                self.saver.save(ed.id.clone(), ed.doc.clone(), ed.image_changed);
+            }
         }
         let item = self.items.remove(index);
-        library::trash(id);
+        // Über den Speicher-Thread, damit ein noch laufendes Speichern die Dateien nicht wiederherstellt.
+        self.saver.trash(id.to_string());
         self.undo_delete = Some((index, item, Instant::now()));
         self.status = None;
     }
 
     fn undo_last_delete(&mut self) {
         if let Some((index, item, _)) = self.undo_delete.take() {
-            library::restore(&item.id);
+            self.saver.restore(item.id.clone());
             let index = index.min(self.items.len());
             self.items.insert(index, item);
         }
@@ -979,7 +1028,7 @@ impl KadraApp {
                 }
                 ui.separator();
                 ui.label(RichText::new("Editor").strong());
-                ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · S Spotlight · F Füllen · C Zuschneiden");
+                ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · K Schwärzen · S Spotlight · F Füllen · C Zuschneiden");
                 ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
                 ui.separator();
                 ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
@@ -1093,6 +1142,8 @@ impl KadraApp {
                             platform::open_privacy_settings();
                         }
                         if ui.add(egui::Button::new("Kadra beenden").min_size(b)).clicked() {
+                            // Sonst fängt `update` das Schließen ab und blendet nur aus.
+                            self.quitting = true;
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
                         if ui.add(egui::Button::new("Schließen").min_size(b)).clicked() {
@@ -1148,6 +1199,10 @@ impl eframe::App for KadraApp {
             }
         }
         // Fertige Thumbnails
+        // Ergebnisse von Kopieren/Exportieren
+        while let Ok(msg) = self.jobs.done.try_recv() {
+            self.notify(msg);
+        }
         while let Ok((id, thumb)) = self.thumb_rx.try_recv() {
             if let Some(it) = self.items.iter_mut().find(|i| i.id == id) {
                 it.thumb = Some(thumb);
@@ -1266,21 +1321,66 @@ impl eframe::App for KadraApp {
         if let Some(ed) = &mut self.editor {
             if ed.dirty {
                 ed.dirty = false;
-                let _ = library::save(&ed.id, &ed.doc, ed.image_changed);
+                self.saver.save(ed.id.clone(), ed.doc.clone(), ed.image_changed);
             }
         }
+        // Alle ausstehenden Schreibvorgänge abschließen, bevor der Prozess endet.
+        self.saver.finish();
+        self.jobs.finish();
     }
 }
 
 /// Export, der noch auf die Qualitätswahl wartet.
 struct PendingExport {
-    img: std::sync::Arc<RgbaImage>,
+    /// Gerendertes Bild, sobald der Hintergrund-Thread fertig ist.
+    img: Option<std::sync::Arc<RgbaImage>>,
+    img_rx: Receiver<std::sync::Arc<RgbaImage>>,
     path: std::path::PathBuf,
     quality: u8,
     remember: bool,
     /// Zuletzt berechnete Größe: (Qualität, Bytes)
     estimate: Option<(u8, usize)>,
     requested: Option<u8>,
+}
+
+type Job = Box<dyn FnOnce() -> String + Send>;
+
+/// Export-Thread: Aufträge laufen nacheinander (so bekommen zwei Schnellspeicherungen in
+/// derselben Sekunde sicher verschiedene Dateinamen); Ergebnis = Statusmeldung.
+struct Jobs {
+    tx: Option<Sender<Job>>,
+    done: Receiver<String>,
+    ctx: egui::Context,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Jobs {
+    fn new(ctx: &egui::Context) -> Self {
+        let (tx, rx) = channel::<Job>();
+        let (done_tx, done) = channel();
+        let ctx2 = ctx.clone();
+        let handle = std::thread::spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let _ = done_tx.send(job());
+                ctx2.request_repaint();
+            }
+        });
+        Self { tx: Some(tx), done, ctx: ctx.clone(), handle: Some(handle) }
+    }
+
+    fn run(&self, job: Job) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(job);
+        }
+    }
+
+    /// Laufende Exporte fertig schreiben lassen (beim Beenden).
+    fn finish(&mut self) {
+        self.tx = None;
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 fn human_size(bytes: usize) -> String {
