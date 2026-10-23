@@ -67,6 +67,7 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sc
 - Shift beim Zeichnen: 45°-Winkel bzw. Quadrat/Kreis
 - Bild: Drehen, Spiegeln, Größe ändern, Zuschneiden
 - Effekte: Rahmen, runde Ecken, Schlagschatten
+- Text kopieren (⌘⇧C, macOS): erkennt Text im Bild oder im markierten Bereich mit Apple Vision (lokal, ohne Internet) und legt ihn in die Zwischenablage
 - Undo/Redo (⌘Z / ⌘⇧Z), Duplizieren (⌘D), Löschen (Entf), Pfeiltasten verschieben, Zoom mit ⌘+Scroll/Pinch
 
 ## Ausgabe & Bibliothek

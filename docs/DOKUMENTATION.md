@@ -75,6 +75,11 @@ Alle Anmerkungen bleiben **nicht-destruktiv** editierbar – auch Weichzeichnen,
 
 **Bild:** Drehen (links/rechts), Spiegeln (horizontal/vertikal), Größe ändern (%).
 **Effekte** (beim Export angewendet): Rahmen, runde Ecken, Schlagschatten.
+**Text kopieren** (⌘⇧C, nur macOS): erkennt den Text im Bild mit Apple Vision – lokal auf dem Mac,
+ohne Internet – und legt ihn als Text in die Zwischenablage. Mit aktiver Markierung (M) nur den Text
+im markierten Bereich. Erkannt wird das Bild so, wie es aussieht: geschwärzte Stellen bleiben unlesbar.
+Sprachen: Deutsch und Englisch. Erreichbar über den Knopf „Text kopieren“ im Bereich *Bild*, im
+Markieren-Panel oder über *Bearbeiten → Text kopieren*.
 **Allgemein:** Rückgängig/Wiederholen (⌘Z / ⌘⇧Z, 100 Schritte), Duplizieren (⌘D),
 Löschen (⌫), Zoom (⌘ + Scrollen / Pinch, „Einpassen“, „100 %“), Verschieben (Scrollen).
 
@@ -115,7 +120,7 @@ Ist Kadra aktiv, stehen oben in der Menüleiste die üblichen macOS-Menüs berei
 |---|---|
 | **Kadra** | Über Kadra (Version, Lizenz, Quellcode, verwendete Bibliotheken), Einstellungen ⌘,, Dienste, Ausblenden ⌘H, Kadra beenden ⌘Q |
 | **Ablage** | Neue Aufnahme ▸ (alle Modi mit Kürzel), Öffnen ⌘O, Schnell speichern ⌘S, Speichern unter ⇧⌘S, Exportieren als ▸, Zielordner zeigen, Fenster schließen ⌘W |
-| **Bearbeiten** | Rückgängig ⌘Z, Wiederholen ⇧⌘Z, Ausschneiden/Kopieren/Einfügen/Alles auswählen (in Textfeldern für Text, sonst für das Bild), Duplizieren ⌘D, Objekt löschen, Auswahl aufheben |
+| **Bearbeiten** | Rückgängig ⌘Z, Wiederholen ⇧⌘Z, Ausschneiden/Kopieren/Einfügen/Alles auswählen (in Textfeldern für Text, sonst für das Bild), Text kopieren ⇧⌘C (nur macOS), Duplizieren ⌘D, Objekt löschen, Auswahl aufheben |
 | **Bild** | Drehen, Spiegeln, Zuschneiden |
 | **Werkzeuge** | Alle Editor-Werkzeuge (Taste in Klammern) |
 | **Darstellung** | Einpassen ⌘0, Originalgröße ⌘1, Vergrößern ⌘=, Verkleinern ⌘− |
@@ -165,7 +170,7 @@ Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings
 | Global (Standard) | ⌃⇧1 Bereich · ⌃⇧2 Fenster · ⌃⇧3 Bildschirm · ⌃⇧4 Alle Bildschirme |
 | Overlay | Tab/⇧Tab Fenster dahinter · L Fensterliste · Enter ganzer Bildschirm · Esc Abbrechen |
 | Editor-Werkzeuge | V A T R E L N H F B X K C P S |
-| Bearbeiten | ⌘Z / ⌘⇧Z · ⌘D · ⌫ · Pfeiltasten · Esc |
+| Bearbeiten | ⌘Z / ⌘⇧Z · ⌘D · ⌘⇧C Text kopieren (macOS) · ⌫ · Pfeiltasten · Esc |
 | Datei | ⌘C Kopieren · ⌘S Speichern · ⌘⇧S Speichern unter · ⌘O Öffnen |
 
 ---
@@ -181,6 +186,7 @@ src/
 ├── editor.rs     Editor: Werkzeuge, Interaktion, Undo, Zuschneiden, Bildoperationen
 ├── doc.rs        Dokumentmodell (Bild + Anmerkungen, serialisierbar)
 ├── render.rs     Export-Rendering (tiny-skia, ab_glyph), Effekte, Füllen
+├── ocr.rs        Texterkennung (macOS: Apple Vision), Zeilen in Lesereihenfolge
 ├── library.rs    Bibliothek, Einstellungen, Export aller Formate inkl. PDF-Writer
 ├── hotkeys.rs    Globale, frei belegbare Tastenkürzel (global-hotkey)
 ├── tray.rs       Menüleisten-Symbol und -Menü (tray-icon)
@@ -195,14 +201,15 @@ src/
 Anmerkungen werden nie ins Original gerechnet, daher bleibt alles bis zum Export änderbar.
 
 **Wichtige Abhängigkeiten:** eframe/egui 0.33 (UI), xcap (Monitoraufnahme), tiny-skia + ab_glyph
-(Rendering), image (Formate), global-hotkey, tray-icon, arboard (Zwischenablage), rfd (Dateidialoge).
+(Rendering), image (Formate), global-hotkey, tray-icon, arboard (Zwischenablage), rfd (Dateidialoge),
+objc2-vision (Texterkennung, macOS).
 
 **Build-Skripte:** `bundle.sh` (App-Paket, Icon, Signatur, optional Universal-Binary),
 `make_dmg.sh` (DMG mit Finder-Layout), `make_windows.sh` + `installer/kadra.nsi` (Windows-Installer
 und ZIP), `build.rs` (Icon/Versionsinfo in der .exe), `examples/make_icon.rs` (Iconset bzw. `--ico`).
 
 **Tests:** `cargo test` – Rendering aller Formen, Füllalgorithmus, Export aller Formate,
-JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste.
+JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste, Texterkennung (macOS).
 
 ---
 

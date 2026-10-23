@@ -290,6 +290,8 @@ pub struct Editor {
     checker: Option<TextureHandle>,
     /// Bild, das die App in die Zwischenablage legen soll (Ausschneiden/Kopieren im Editor).
     pub clipboard_out: Option<RgbaImage>,
+    /// Text erkennen und kopieren wurde angefordert (die App führt es im Hintergrund aus).
+    pub copy_text_requested: bool,
 }
 
 fn c32(c: Rgba) -> Color32 {
@@ -339,6 +341,7 @@ impl Editor {
             piece_tex: HashMap::new(),
             checker: None,
             clipboard_out: None,
+            copy_text_requested: false,
         }
     }
 
@@ -531,7 +534,7 @@ impl Editor {
     }
 
     /// Markierung als ganze Pixel innerhalb des Bildes: (x, y, w, h).
-    fn marquee_px(&self) -> Option<(u32, u32, u32, u32)> {
+    pub fn marquee_px(&self) -> Option<(u32, u32, u32, u32)> {
         let r = self.marquee?.intersect(self.full_rect());
         let (x0, y0) = (r.min.x.floor().max(0.0) as u32, r.min.y.floor().max(0.0) as u32);
         let (x1, y1) = (r.max.x.ceil() as u32, r.max.y.ceil() as u32);
@@ -861,6 +864,11 @@ impl Editor {
                 if ui.add(egui::Button::new("⛶  Auf Auswahl zuschneiden").min_size(wide)).clicked() {
                     self.crop_to_marquee();
                 }
+                if crate::ocr::AVAILABLE
+                    && ui.add(egui::Button::new(crate::ui_kit::keys("🔤  Text im Bereich kopieren   ⌘⇧C")).min_size(wide)).clicked()
+                {
+                    self.copy_text_requested = true;
+                }
             });
             ui.add_space(4.0);
             ui.weak(crate::ui_kit::keys("⌘V fügt ein Bild aus der Zwischenablage als verschiebbares Bildstück ein."));
@@ -931,6 +939,14 @@ impl Editor {
                 self.resize(self.resize_pct / 100.0);
             }
         });
+        if crate::ocr::AVAILABLE
+            && ui
+            .button("🔤 Text kopieren")
+            .on_hover_text(crate::ui_kit::keys("Text im Bild erkennen und in die Zwischenablage legen (⌘⇧C)"))
+            .clicked()
+        {
+            self.copy_text_requested = true;
+        }
 
         ui.add_space(16.0);
         ui.heading("Effekte");
