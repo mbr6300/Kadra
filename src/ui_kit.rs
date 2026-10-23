@@ -101,15 +101,51 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
         p.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, accent.gamma_multiply(0.6)), StrokeKind::Inside);
     }
     if compact {
-        p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
+        paint_icon(p, rect.center(), icon, icon_col);
         if menu {
             p.text(rect.center_bottom() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, "▾", FontId::proportional(10.0), fg);
         }
     } else {
-        p.text(rect.center_top() + Vec2::new(0.0, 19.0), Align2::CENTER_CENTER, icon, FontId::proportional(21.0), icon_col);
+        paint_icon(p, rect.center_top() + Vec2::new(0.0, 19.0), icon, icon_col);
         p.text(rect.center_bottom() - Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, label_text(label, menu), FontId::proportional(11.5), fg);
     }
     resp
+}
+
+/// Symbole, die in der Leiste als Vektorgrafik gezeichnet werden: Die passenden Unicode-Zeichen
+/// fehlen in den Schriften (Ersatzkästchen) oder sehen selbst wie eines aus. In Menütexten
+/// stehen diese Zeichen, die überall vorhanden sind.
+pub const ICON_RECT: &str = "▭";
+pub const ICON_STEP: &str = "🔢";
+pub const ICON_MARKER: &str = "🖊";
+
+/// Leisten-Symbol (ca. 21 pt) zentriert an `c`.
+fn paint_icon(p: &egui::Painter, c: egui::Pos2, icon: &str, col: Color32) {
+    use egui::{pos2, vec2, Rect};
+    match icon {
+        ICON_RECT => {
+            let r = Rect::from_center_size(c, vec2(20.0, 14.0));
+            p.rect_stroke(r, CornerRadius::same(2), Stroke::new(2.0, col), StrokeKind::Middle);
+        }
+        ICON_STEP => {
+            p.circle_filled(c, 10.0, col);
+            // Ziffer in Hintergrundfarbe: hell auf dunklem Kreis, dunkel auf hellem.
+            let lum = col.r() as u32 * 3 + col.g() as u32 * 6 + col.b() as u32;
+            let digit = if lum > 1500 { Color32::from_gray(30) } else { Color32::WHITE };
+            p.text(c + vec2(0.0, 0.5), Align2::CENTER_CENTER, "1", FontId::proportional(13.0), digit);
+        }
+        ICON_MARKER => {
+            // Breiter, halbtransparenter Strich mit schräger Markerspitze darüber.
+            p.line_segment([pos2(c.x - 10.0, c.y + 6.0), pos2(c.x + 10.0, c.y + 6.0)], Stroke::new(5.0, col.gamma_multiply(0.45)));
+            let tip = [pos2(c.x + 1.0, c.y + 3.0), pos2(c.x - 3.0, c.y - 1.0), pos2(c.x + 5.0, c.y - 9.0), pos2(c.x + 9.0, c.y - 5.0)];
+            p.add(egui::Shape::convex_polygon(tip.to_vec(), Color32::TRANSPARENT, Stroke::new(1.8, col)));
+            p.line_segment([pos2(c.x + 1.0, c.y + 3.0), pos2(c.x - 3.0, c.y + 4.0)], Stroke::new(1.8, col));
+            p.line_segment([pos2(c.x - 3.0, c.y + 4.0), pos2(c.x - 3.0, c.y - 1.0)], Stroke::new(1.8, col));
+        }
+        _ => {
+            p.text(c, Align2::CENTER_CENTER, icon, FontId::proportional(21.0), col);
+        }
+    }
 }
 
 /// Großzügigerer, macOS-naher Grundstil: größere Schrift, mehr Luft,

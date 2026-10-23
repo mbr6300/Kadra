@@ -67,7 +67,7 @@ pub struct KadraApp {
     jobs: Jobs,
 }
 
-const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗔", "🖵", "🖥"];
+const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗖", "🖵", "🖥"];
 
 /// So lange wird nach dem Löschen „Rückgängig“ angeboten.
 const UNDO_DELETE_FOR: Duration = Duration::from_secs(8);

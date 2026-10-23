@@ -503,6 +503,18 @@ mod tests {
     use super::*;
     use crate::doc::{Annotation, Document, Effects, Style};
 
+    /// Fehlt ein Zeichen in allen Schriften, zeigt egui nur ein Ersatzkästchen.
+    #[test]
+    fn toolbar_icons_have_glyphs() {
+        let bar = ["⏺", "📂", "📋", "↶", "↷", "⚙", "💾", "⧉", "⛶", "🗖", "🖵", "🖥", "⋯", "▾"];
+        let tools = crate::editor::Tool::ALL.map(|t| t.icon());
+        for icon in bar.iter().chain(&tools) {
+            for ch in icon.chars() {
+                assert!(faces().iter().any(|f| f.font.glyph_id(ch).0 != 0), "Kein Glyph für {ch:?} (U+{:04X})", ch as u32);
+            }
+        }
+    }
+
     #[test]
     fn flood_fill_respects_borders_and_tolerance() {
         // Weiße Fläche mit schwarzer senkrechter Linie bei x = 5; links leicht abweichendes Weiß
