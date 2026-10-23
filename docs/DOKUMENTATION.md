@@ -142,6 +142,7 @@ macOS-Version, mit diesen Unterschieden:
 - **Kürzel** mit **Strg** statt ⌘ und **Umschalt** statt ⇧ (z. B. Strg+S, Strg+Umschalt+Z);
   globale Aufnahme-Kürzel standardmäßig Strg+Umschalt+1 … 4. Globale Kürzel können zusätzlich die
   Windows-Taste nutzen.
+- **Texterkennung** („Text kopieren“) gibt es vorerst nur unter macOS; unter Windows ist sie ausgeblendet.
 - **Menüleiste im Fenster:** Datei (inkl. Einstellungen und Beenden), Bearbeiten, Bild, Werkzeuge,
   Darstellung, Hilfe (inkl. „Über Kadra“).
 - **Hintergrundbetrieb:** Schließen blendet das Fenster aus; Kadra bleibt mit Symbol im
@@ -169,7 +170,7 @@ Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings
 |---|---|
 | Global (Standard) | ⌃⇧1 Bereich · ⌃⇧2 Fenster · ⌃⇧3 Bildschirm · ⌃⇧4 Alle Bildschirme |
 | Overlay | Tab/⇧Tab Fenster dahinter · L Fensterliste · Enter ganzer Bildschirm · Esc Abbrechen |
-| Editor-Werkzeuge | V A T R E L N H F B X K C P S |
+| Editor-Werkzeuge | V M A T R E L N H F B X K C P S |
 | Bearbeiten | ⌘Z / ⌘⇧Z · ⌘D · ⌘⇧C Text kopieren (macOS) · ⌫ · Pfeiltasten · Esc |
 | Datei | ⌘C Kopieren · ⌘S Speichern · ⌘⇧S Speichern unter · ⌘O Öffnen |
 
@@ -231,7 +232,7 @@ JPEG-Qualität, Zuschneide-Logik, Dock-Icon, Fensterliste, Texterkennung (macOS)
 - Overlay über alle Bildschirme gleichzeitig
 - Countdown-Anzeige bei verzögerter Aufnahme, „Letzten Bereich wiederholen“
 - Mauszeiger optional mit aufnehmen
-- Texterkennung (OCR) über das macOS-Vision-Framework, Text kopieren
+- Texterkennung auch unter Windows (`Windows.Media.Ocr` hinter derselben Schnittstelle in `ocr.rs`)
 - Videoaufnahme/GIF (bewusst ausgelassen, xcap bietet einen Video-Recorder)
 
 **Editor**
