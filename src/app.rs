@@ -70,6 +70,8 @@ const CAPTURE_ICONS: [&str; 4] = ["⛶", "🗔", "🖵", "🖥"];
 
 /// So lange wird nach dem Löschen „Rückgängig“ angeboten.
 const UNDO_DELETE_FOR: Duration = Duration::from_secs(8);
+/// Erlaubte Sondertasten für globale Kürzel.
+const MOD_HINT: &str = if cfg!(target_os = "macos") { "⌃ Ctrl, ⌥ Option oder ⌘ Cmd" } else { "Strg, Alt oder Win" };
 
 /// Runder Löschen-Knopf (dunkler Kreis mit weißem ×, rot beim Darüberfahren).
 fn paint_delete_badge(p: &egui::Painter, c: egui::Pos2, hot: bool) {
@@ -160,6 +162,15 @@ impl KadraApp {
             jobs: Jobs::new(&cc.egui_ctx),
         };
         menu::install_handler(&cc.egui_ctx, menu_tx);
+        #[cfg(target_os = "windows")]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = cc.window_handle()
+                && let RawWindowHandle::Win32(w) = h.as_raw()
+            {
+                platform::win::set_main_window(w.hwnd.get());
+            }
+        }
         let shortcuts = app.active_shortcuts();
         app.tray = Tray::new(&shortcuts);
         app.app_menu = AppMenu::new(&shortcuts, menu::about_icon());
@@ -193,7 +204,7 @@ impl KadraApp {
             let vp = i.viewport();
             Some((vp.outer_rect?.min, vp.inner_rect?.size()))
         });
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        set_window_visible(ctx, false, false);
         let (tx, rx) = channel();
         let delay = Duration::from_secs(self.settings.delay_secs as u64) + Duration::from_millis(350);
         let ctx2 = ctx.clone();
@@ -210,6 +221,10 @@ impl KadraApp {
     /// (wenn die Aufnahme aus der Menüleiste kam und abgebrochen wurde).
     fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame, show: bool) {
         platform::set_overlay_level(frame, false);
+        #[cfg(target_os = "windows")]
+        if let Some(m) = &self.app_menu {
+            m.set_bar_visible(true);
+        }
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
         if let Some((pos, size)) = self.saved_window.take() {
             // Erst Größe, dann Position: macOS rechnet die Position mit der aktuellen Höhe um.
@@ -219,7 +234,7 @@ impl KadraApp {
         if show {
             self.show_window(ctx);
         } else {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            set_window_visible(ctx, false, false);
         }
     }
 
@@ -227,7 +242,7 @@ impl KadraApp {
     fn show_window(&mut self, ctx: &egui::Context) {
         self.hidden = false;
         platform::set_dock_visible(true);
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        set_window_visible(ctx, true, true);
         ctx.send_viewport_cmd(ViewportCommand::Focus);
     }
 
@@ -240,7 +255,7 @@ impl KadraApp {
         }
         self.flush_save(true);
         self.hidden = true;
-        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        set_window_visible(ctx, false, false);
         platform::set_dock_visible(false);
     }
 
@@ -254,7 +269,11 @@ impl KadraApp {
             .min_width(420.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Das Fenster wird geschlossen, Kadra bleibt aber in der Menüleiste oben rechts aktiv.");
+                ui.label(if cfg!(target_os = "macos") {
+                    "Das Fenster wird geschlossen, Kadra bleibt aber in der Menüleiste oben rechts aktiv."
+                } else {
+                    "Das Fenster wird geschlossen, Kadra bleibt aber im Infobereich der Taskleiste (unten rechts) aktiv."
+                });
                 ui.label("Über das Symbol ⛶ erreichst du die Aufnahmen, öffnest Kadra wieder oder beendest es ganz.");
                 ui.weak("Globale Tastenkürzel funktionieren weiterhin.");
                 let (ok, cancel) = ui_kit::dialog_buttons(ui, "Verstanden", true);
@@ -298,9 +317,25 @@ impl KadraApp {
                     let _ = std::fs::create_dir_all(&self.settings.save_dir);
                     open_url(&self.settings.save_dir.to_string_lossy());
                 }
-                Action::Copy => self.copy(),
-                Action::Paste => self.paste(),
-                Action::Cut | Action::SelectAll => {}
+                // Mit Markierung wirken Kopieren/Ausschneiden auf den markierten Bereich
+                Action::Copy => match self.editor.as_mut().filter(|e| e.has_marquee()) {
+                    Some(ed) => ed.clipboard_out = ed.marquee_piece(),
+                    None => self.copy(),
+                },
+                Action::Cut => {
+                    if let Some(ed) = self.editor.as_mut().filter(|e| e.has_marquee()) {
+                        ed.clipboard_out = ed.cut_marquee();
+                    }
+                }
+                // Bei offenem Bild als verschiebbares Bildstück einfügen, sonst als neue Aufnahme
+                Action::Paste => match clipboard_image() {
+                    Some(img) => match &mut self.editor {
+                        Some(ed) => ed.paste_piece(img),
+                        None => self.open_new(img),
+                    },
+                    None => self.notify("Kein Bild in der Zwischenablage"),
+                },
+                Action::SelectAll => {}
                 Action::Docs => open_url(&format!("{}/blob/master/docs/DOKUMENTATION.md", menu::REPO_URL)),
                 Action::Website => open_url(menu::REPO_URL),
                 Action::Issues => open_url(&format!("{}/issues", menu::REPO_URL)),
@@ -310,8 +345,8 @@ impl KadraApp {
                         match action {
                             Action::Undo => ed.undo(),
                             Action::Redo => ed.redo(),
-                            Action::Duplicate => ed.duplicate_selected(),
-                            Action::Delete => ed.delete_selected(),
+                            Action::Duplicate => ed.duplicate(),
+                            Action::Delete => ed.delete(),
                             Action::Deselect => ed.selected = None,
                             Action::RotateLeft => ed.rotate(false),
                             Action::RotateRight => ed.rotate(true),
@@ -357,11 +392,15 @@ impl KadraApp {
                 // Aus dem Hintergrund: App aktivieren, damit das Overlay Tastatur/Maus bekommt.
                 platform::activate_app();
                 platform::set_overlay_level(frame, true);
+                #[cfg(target_os = "windows")]
+                if let Some(m) = &self.app_menu {
+                    m.set_bar_visible(false);
+                }
                 ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
                 ctx.send_viewport_cmd(ViewportCommand::OuterPosition(origin));
                 self.overlay_fix_frames = 4;
-                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                set_window_visible(ctx, true, false);
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
             Ok(grab) => {
@@ -628,10 +667,7 @@ impl KadraApp {
     }
 
     fn paste(&mut self) {
-        let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok().and_then(|d| {
-            RgbaImage::from_raw(d.width as u32, d.height as u32, d.bytes.into_owned())
-        });
-        match img {
+        match clipboard_image() {
             Some(img) => self.open_new(img),
             None => self.notify("Kein Bild in der Zwischenablage"),
         }
@@ -650,7 +686,7 @@ impl KadraApp {
             ui_kit::set_compact(ctx, layout.compact_sides);
             let resp = bar_button(ui, "⏺", "Aufnahme", Look::Primary, true, true).on_hover_text("Aufnahmemodus wählen");
             egui::Popup::menu(&resp).show(|ui| self.capture_menu(ctx, ui));
-            if bar_button(ui, "📂", "Öffnen", tool, true, false).on_hover_text("Bild öffnen (⌘O)").clicked() {
+            if bar_button(ui, "📂", "Öffnen", tool, true, false).on_hover_text(crate::ui_kit::keys("Bild öffnen (⌘O)")).clicked() {
                 self.open_file();
             }
             if bar_button(ui, "📋", "Einfügen", tool, true, false).on_hover_text("Bild aus der Zwischenablage").clicked() {
@@ -658,12 +694,12 @@ impl KadraApp {
             }
             bar_separator(ui);
             let (cu, cr) = self.editor.as_ref().map(|e| (e.can_undo(), e.can_redo())).unwrap_or_default();
-            if bar_button(ui, "↶", "Zurück", tool, cu, false).on_hover_text("Rückgängig (⌘Z)").clicked() {
+            if bar_button(ui, "↶", "Zurück", tool, cu, false).on_hover_text(crate::ui_kit::keys("Rückgängig (⌘Z)")).clicked() {
                 if let Some(e) = &mut self.editor {
                     e.undo();
                 }
             }
-            if bar_button(ui, "↷", "Vor", tool, cr, false).on_hover_text("Wiederholen (⌘⇧Z)").clicked() {
+            if bar_button(ui, "↷", "Vor", tool, cr, false).on_hover_text(crate::ui_kit::keys("Wiederholen (⌘⇧Z)")).clicked() {
                 if let Some(e) = &mut self.editor {
                     e.redo();
                 }
@@ -690,11 +726,11 @@ impl KadraApp {
                 egui::Popup::menu(&resp).show(|ui| {
                     ui.set_min_width(220.0);
                     let quick = format!("Schnell speichern ({})", library::format_name(&self.settings.format));
-                    if ui.add(egui::Button::new(quick).shortcut_text("⌘S")).clicked() {
+                    if ui.add(egui::Button::new(quick).shortcut_text(crate::ui_kit::keys("⌘S"))).clicked() {
                         self.quick_save();
                         ui.close();
                     }
-                    if ui.add(egui::Button::new("Speichern unter …").shortcut_text("⌘⇧S")).clicked() {
+                    if ui.add(egui::Button::new("Speichern unter …").shortcut_text(crate::ui_kit::keys("⌘⇧S"))).clicked() {
                         ui.close();
                         self.save_as(None);
                     }
@@ -707,13 +743,13 @@ impl KadraApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("Zielordner im Finder zeigen").clicked() {
+                    if ui.button(if cfg!(target_os = "macos") { "Zielordner im Finder zeigen" } else { "Zielordner im Explorer zeigen" }).clicked() {
                         let _ = std::fs::create_dir_all(&self.settings.save_dir);
-                        let _ = std::process::Command::new("open").arg(&self.settings.save_dir).spawn();
+                        platform::open(&self.settings.save_dir);
                         ui.close();
                     }
                 });
-                if bar_button(ui, "⧉", "Kopieren", tool, has, false).on_hover_text("In die Zwischenablage (⌘C)").clicked() {
+                if bar_button(ui, "⧉", "Kopieren", tool, has, false).on_hover_text(crate::ui_kit::keys("In die Zwischenablage (⌘C)")).clicked() {
                     self.copy();
                 }
             });
@@ -1014,7 +1050,7 @@ impl KadraApp {
                     if let Some(hint) = &self.recording_hint {
                         ui.colored_label(Color32::from_rgb(220, 120, 0), hint);
                     } else if self.recording.is_some() {
-                        ui.weak("Mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren (z. B. ⌃ + ⇧ + 1). Esc bricht ab.");
+                        ui.weak(format!("Mit {MOD_HINT} kombinieren (z. B. {}). Esc bricht ab.", crate::ui_kit::keys("⌃ + ⇧ + 1")));
                     }
                     if ui.button("Standard wiederherstellen").clicked() {
                         self.settings.shortcuts = Shortcut::defaults();
@@ -1029,7 +1065,7 @@ impl KadraApp {
                 ui.separator();
                 ui.label(RichText::new("Editor").strong());
                 ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · K Schwärzen · S Spotlight · F Füllen · C Zuschneiden");
-                ui.label("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom");
+                ui.label(crate::ui_kit::keys("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom"));
                 ui.separator();
                 ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
             });
@@ -1090,7 +1126,7 @@ impl KadraApp {
         let sc = Shortcut::new(mods, key);
         if !sc.is_valid() {
             self.recording_hint =
-                Some(format!("„{}“ geht nicht – bitte mit ⌃ Ctrl, ⌥ Option oder ⌘ Cmd kombinieren.", sc.compact()));
+                Some(format!("„{}“ geht nicht – bitte mit {MOD_HINT} kombinieren.", sc.compact()));
             return;
         }
         // Doppelte Belegung auflösen
@@ -1186,12 +1222,21 @@ impl KadraApp {
 
 impl eframe::App for KadraApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        #[cfg(target_os = "windows")]
+        platform::win::apply_pending_park();
         // Schließen-Knopf / ⌘W: nur ausblenden, außer „Kadra beenden“ wurde gewählt.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.hide_to_background(ctx);
         }
         self.handle_menu_actions(ctx);
+        // Vom Editor ausgeschnittene/kopierte Bereiche in die Zwischenablage legen
+        if let Some(img) = self.editor.as_mut().and_then(|e| e.clipboard_out.take()) {
+            match copy_to_clipboard(&img) {
+                Ok(()) => self.notify(format!("Bereich ({} × {} px) in die Zwischenablage kopiert", img.width(), img.height())),
+                Err(e) => self.notify(format!("Zwischenablage: {e}")),
+            }
+        }
         // Globale Hotkeys
         while let Ok(id) = self.hotkey_rx.try_recv() {
             if let Some(kind) = self.hotkeys.as_ref().and_then(|h| h.kind_for(id)) {
@@ -1390,8 +1435,33 @@ fn human_size(bytes: usize) -> String {
     }
 }
 
+/// Bild aus der Zwischenablage (falls vorhanden).
+/// Fenster ein-/ausblenden. Windows parkt statt zu verstecken (siehe `platform::win`);
+/// `restore_pos = false` überlässt die Position nachfolgenden Viewport-Befehlen.
+fn set_window_visible(ctx: &egui::Context, visible: bool, restore_pos: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        if visible {
+            platform::win::unpark(restore_pos);
+        } else {
+            platform::win::request_park();
+            ctx.request_repaint();
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = restore_pos;
+        ctx.send_viewport_cmd(ViewportCommand::Visible(visible));
+    }
+}
+
+fn clipboard_image() -> Option<RgbaImage> {
+    let d = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok()?;
+    RgbaImage::from_raw(d.width as u32, d.height as u32, d.bytes.into_owned())
+}
+
 fn open_url(target: &str) {
-    let _ = std::process::Command::new("open").arg(target).spawn();
+    platform::open(target);
 }
 
 /// Bearbeitungsbefehl aus dem Menü an das fokussierte Textfeld weitergeben.

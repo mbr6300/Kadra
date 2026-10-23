@@ -93,23 +93,26 @@ fn current_monitor() -> Result<Monitor, String> {
 
 const IGNORED_APPS: &[&str] =
     &["Window Server", "Dock", "Control Center", "SystemUIServer", "Notification Center", "Spotlight"];
+/// Windows: Desktop-Hintergrund.
+const IGNORED_TITLES: &[&str] = &["Program Manager"];
 
 /// Alle aufnehmbaren Fenster, vorderstes zuerst – inkl. verdeckter und solcher
 /// auf anderen Schreibtischen.
-fn list_windows(origin: Pos2) -> Vec<WinInfo> {
+fn list_windows(origin: Pos2, sf: f32) -> Vec<WinInfo> {
     let own = std::process::id();
     crate::platform::list_windows(true)
         .into_iter()
         .filter_map(|w| {
-            if w.pid == own || IGNORED_APPS.contains(&w.app.as_str()) {
+            if w.pid == own || IGNORED_APPS.contains(&w.app.as_str()) || IGNORED_TITLES.contains(&w.title.as_str()) {
                 return None;
             }
             // Unsichtbare Hilfsfenster ohne Titel ausblenden.
-            let hidden_junk = !w.on_screen && (w.title.trim().is_empty() || w.w < 160.0 || w.h < 100.0);
-            if w.w < 60.0 || w.h < 40.0 || hidden_junk {
+            let (x, y, ww, wh) = (w.x / sf, w.y / sf, w.w / sf, w.h / sf);
+            let hidden_junk = !w.on_screen && (w.title.trim().is_empty() || ww < 160.0 || wh < 100.0);
+            if ww < 60.0 || wh < 40.0 || hidden_junk {
                 return None;
             }
-            let r = Rect::from_min_size(Pos2::new(w.x, w.y), Vec2::new(w.w, w.h));
+            let r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(ww, wh));
             Some(WinInfo {
                 id: w.id,
                 title: w.title,
@@ -126,10 +129,12 @@ pub fn grab(kind: CaptureKind) -> Result<Grab, String> {
         return grab_all();
     }
     let m = current_monitor()?;
-    let origin = Pos2::new(m.x().unwrap_or(0) as f32, m.y().unwrap_or(0) as f32);
-    let size = Vec2::new(m.width().unwrap_or(1) as f32, m.height().unwrap_or(1) as f32);
+    // Logische Punkte (Windows liefert physische Pixel)
+    let sf = crate::platform::coord_scale(&m);
+    let origin = Pos2::new(m.x().unwrap_or(0) as f32 / sf, m.y().unwrap_or(0) as f32 / sf);
+    let size = Vec2::new(m.width().unwrap_or(1) as f32 / sf, m.height().unwrap_or(1) as f32 / sf);
     let image = m.capture_image().map_err(|e| format!("Aufnahme fehlgeschlagen: {e}"))?;
-    let windows = if kind.needs_overlay() { list_windows(origin) } else { vec![] };
+    let windows = if kind.needs_overlay() { list_windows(origin, sf) } else { vec![] };
     Ok(Grab { kind, image, origin, size, windows })
 }
 

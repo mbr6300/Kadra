@@ -5,7 +5,8 @@ use std::sync::OnceLock;
 use ab_glyph::{Font, FontArc, GlyphId, PxScale, ScaleFont};
 use image::{imageops, Rgba as Px, RgbaImage};
 use tiny_skia::{
-    Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform,
+    Color, FillRule, FilterQuality, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke,
+    Transform,
 };
 
 use crate::doc::{rect, Annotation, Document, Effects, Rgba, Shape, P};
@@ -309,6 +310,25 @@ fn draw_shape(pm: &mut Pixmap, ann: &Annotation, off: f32, shadow: bool) {
     let t = Transform::from_translate(off, off);
     let sk = stroke(st.width);
     match &ann.shape {
+        Shape::Image { a, b, img } => {
+            let r = rect(*a, *b);
+            if shadow {
+                if let Some(path) = rect_path(*a, *b) {
+                    pm.fill_path(&path, &paint(col), FillRule::Winding, t, None);
+                }
+            } else if r.width() >= 1.0 && r.height() >= 1.0 {
+                let src = to_pixmap(&img.0);
+                let (sx, sy) = (r.width() / src.width() as f32, r.height() / src.height() as f32);
+                let quality = if (sx - 1.0).abs() < 1e-3 && (sy - 1.0).abs() < 1e-3 {
+                    FilterQuality::Nearest
+                } else {
+                    FilterQuality::Bilinear
+                };
+                let paint = PixmapPaint { quality, ..Default::default() };
+                let tf = Transform::from_translate(r.min.x, r.min.y).pre_scale(sx, sy);
+                pm.draw_pixmap(0, 0, src.as_ref(), &paint, tf, None);
+            }
+        }
         Shape::Arrow { a, b } => {
             let (end, tri) = arrow_head(*a, *b, st.width);
             if let Some(path) = poly_path(&[*a, end], false) {

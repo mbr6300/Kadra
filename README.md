@@ -1,6 +1,6 @@
 # Kadra
 
-Screenshot-Werkzeug für macOS: Bildschirmfotos aufnehmen, beschriften und exportieren.
+Screenshot-Werkzeug für macOS und Windows: Bildschirmfotos aufnehmen, beschriften und exportieren.
 Geschrieben in Rust (eframe/egui, xcap, tiny-skia).
 
 Ausführliche Beschreibung aller Funktionen, Architektur und möglicher Erweiterungen:
@@ -28,6 +28,22 @@ Für die Weitergabe an andere Macs ohne Gatekeeper-Warnung braucht es eine
 Beim ersten Aufnehmen fragt macOS nach der Berechtigung **Bildschirmaufnahme**
 (Systemeinstellungen → Datenschutz & Sicherheit). Danach Kadra neu starten.
 Für die Entwicklung geht auch `cargo run --release [bild.png]`.
+
+### Windows
+
+Installer und portable Version werden per Cross-Compile direkt auf dem Mac gebaut:
+
+```bash
+brew install mingw-w64 makensis
+rustup target add x86_64-pc-windows-gnu
+./make_windows.sh           # erzeugt target/Kadra-Setup-<version>.exe und …-windows-x64.zip
+```
+
+Der Installer braucht keine Administratorrechte (Installation nach `%LOCALAPPDATA%\Programs\Kadra`),
+legt Startmenü-Eintrag und optional Desktop-Verknüpfung bzw. Autostart an und registriert ein
+Deinstallationsprogramm. Ohne Code-Signing-Zertifikat zeigt Windows SmartScreen beim ersten Start
+„Der Computer wurde durch Windows geschützt“ → *Weitere Informationen* → *Trotzdem ausführen*.
+Unter Windows gelten die Kürzel mit **Strg** statt ⌘ (z. B. Strg+S, Strg+Umschalt+1).
 
 ## Aufnahme
 
@@ -59,7 +75,8 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sc
 - Formate: PNG, JPEG, TIFF, WebP, GIF, BMP, PDF – Schnellspeicher-Format und JPEG-/PDF-Qualität in den Einstellungen
 - Formate ohne Transparenz (JPEG, BMP, PDF) bekommen weißen Hintergrund
 - Jede Aufnahme landet automatisch in der Bibliothek (Leiste unten) und bleibt dort editierbar:
-  `~/Library/Application Support/Kadra/library/` (Original-PNG + Anmerkungen als JSON)
+  `~/Library/Application Support/Kadra/library/` bzw. unter Windows `%APPDATA%\Kadra\library\`
+  (Original-PNG + Anmerkungen als JSON)
 
 ## Aufbau
 
@@ -71,7 +88,7 @@ Textmarker (H), Text (T), Nummerierung (N), Weichzeichnen (B), Verpixeln (X), Sc
 | `src/doc.rs` | Dokumentmodell (Anmerkungen) |
 | `src/render.rs` | Export-Rendering (tiny-skia, ab_glyph) |
 | `src/library.rs` | Bibliothek, Einstellungen, Export |
-| `src/platform.rs` | macOS-Spezifika (Fensterebene, Mausposition) |
+| `src/platform.rs` | Plattform-Spezifika (macOS: Berechtigung, Fensterebene, Dock; Windows: Hintergrundbetrieb, Menü-Kürzel) |
 
 ## Lizenz
 

@@ -1,14 +1,15 @@
 [package]
 name = "kadra"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "Screenshot-Werkzeug für macOS – aufnehmen, beschriften, exportieren"
+description = "Screenshot-Werkzeug für macOS und Windows – aufnehmen, beschriften, exportieren"
 repository = "https://github.com/mbr6300/Kadra"
 
 [dependencies]
 ab_glyph = "0.2.32"
 arboard = "3"
+base64 = "0.22"
 chrono = "0.4"
 dirs = "6"
 eframe = "0.33"
@@ -26,3 +27,11 @@ xcap = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Gleiche Version wie in eframe – nur für den Message-Hook (Menü-Kürzel).
+winit = { version = "0.30", default-features = false }
+
+[build-dependencies]
+winresource = "0.1"
