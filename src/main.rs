@@ -11,6 +11,7 @@ mod hotkeys;
 mod icon;
 mod library;
 mod menu;
+mod ocr;
 mod overlay;
 mod platform;
 mod render;

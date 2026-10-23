@@ -12,6 +12,7 @@ use crate::editor::{self, Editor};
 use crate::ui_kit::{self, bar_button, bar_separator, Look, ORANGE};
 use crate::hotkeys::{self, Hotkeys, Shortcut};
 use crate::library::{self, Item, Settings};
+use crate::ocr;
 use crate::overlay::{Overlay, OverlayResult};
 use crate::platform;
 use crate::render;
@@ -336,6 +337,7 @@ impl KadraApp {
                     None => self.notify("Kein Bild in der Zwischenablage"),
                 },
                 Action::SelectAll => {}
+                Action::CopyText => self.copy_text(),
                 Action::Docs => open_url(&format!("{}/blob/master/docs/DOKUMENTATION.md", menu::REPO_URL)),
                 Action::Website => open_url(menu::REPO_URL),
                 Action::Issues => open_url(&format!("{}/issues", menu::REPO_URL)),
@@ -479,6 +481,35 @@ impl KadraApp {
         self.run_job("Wird kopiert …", move || match copy_to_clipboard(&render::render(&doc)) {
             Ok(()) => "In die Zwischenablage kopiert".into(),
             Err(e) => format!("Zwischenablage: {e}"),
+        });
+    }
+
+    /// Text im Bild (bzw. im markierten Bereich) erkennen und als Text in die Zwischenablage legen.
+    /// Erkannt wird das Bild so, wie es aussieht – geschwärzte Stellen bleiben also unlesbar.
+    fn copy_text(&mut self) {
+        let Some(ed) = &self.editor else { return };
+        let (doc, region) = (ed.doc.clone(), ed.marquee_px());
+        let what = if region.is_some() { "im Bereich" } else { "im Bild" };
+        self.run_job("Text wird erkannt …", move || {
+            let mut img = render::render_content(&doc);
+            if let Some((x, y, w, h)) = region {
+                img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+            }
+            let lines = match ocr::recognize(&img) {
+                Ok(lines) => lines,
+                Err(e) => return e,
+            };
+            if lines.is_empty() {
+                return format!("Kein Text {what} gefunden");
+            }
+            let text = ocr::to_text(&lines);
+            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                Ok(()) => match lines.len() {
+                    1 => "1 Textzeile in die Zwischenablage kopiert".into(),
+                    n => format!("{n} Textzeilen in die Zwischenablage kopiert"),
+                },
+                Err(e) => format!("Zwischenablage: {e}"),
+            }
         });
     }
 
@@ -1065,7 +1096,10 @@ impl KadraApp {
                 ui.separator();
                 ui.label(RichText::new("Editor").strong());
                 ui.label("V Auswahl · A Pfeil · L Linie · R Rechteck · E Ellipse · P Stift · H Marker · T Text · N Nummer · B Weichzeichnen · X Verpixeln · K Schwärzen · S Spotlight · F Füllen · C Zuschneiden");
-                ui.label(crate::ui_kit::keys("⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom"));
+                let text_copy = if ocr::AVAILABLE { " · ⌘⇧C Text kopieren" } else { "" };
+                ui.label(crate::ui_kit::keys(&format!(
+                    "⌘Z Rückgängig · ⌘⇧Z Wiederholen · ⌘D Duplizieren{text_copy} · ⌫ Löschen · Pfeiltasten Verschieben · ⌘ + Scrollen Zoom"
+                )));
                 ui.separator();
                 ui.weak(format!("Bibliothek: {}", library::data_dir().join("library").display()));
             });
@@ -1231,6 +1265,10 @@ impl eframe::App for KadraApp {
         }
         self.handle_menu_actions(ctx);
         // Vom Editor ausgeschnittene/kopierte Bereiche in die Zwischenablage legen
+        // Knöpfe „Text kopieren“ im Editor
+        if self.editor.as_mut().is_some_and(|e| std::mem::take(&mut e.copy_text_requested)) {
+            self.copy_text();
+        }
         if let Some(img) = self.editor.as_mut().and_then(|e| e.clipboard_out.take()) {
             match copy_to_clipboard(&img) {
                 Ok(()) => self.notify(format!("Bereich ({} × {} px) in die Zwischenablage kopiert", img.width(), img.height())),

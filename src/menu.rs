@@ -39,6 +39,7 @@ pub enum Action {
     Paste,
     SelectAll,
     Duplicate,
+    CopyText,
     Delete,
     Deselect,
     // Bild
@@ -90,6 +91,7 @@ impl Action {
             Action::Paste,
             Action::SelectAll,
             Action::Duplicate,
+            Action::CopyText,
             Action::Delete,
             Action::Deselect,
             Action::RotateLeft,
@@ -119,6 +121,7 @@ impl Action {
                 | Action::SaveAs
                 | Action::Export(_)
                 | Action::Duplicate
+                | Action::CopyText
                 | Action::Delete
                 | Action::Deselect
                 | Action::RotateLeft
@@ -245,24 +248,26 @@ impl AppMenu {
         // Bearbeiten
         let undo = item(Action::Undo, "Rückgängig", Some("CMDORCTRL+Z"));
         let redo = item(Action::Redo, "Wiederholen", Some("CMDORCTRL+SHIFT+Z"));
-        let edit = Submenu::with_items(
-            "Bearbeiten",
-            true,
-            &[
-                &undo,
-                &redo,
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::Cut, "Ausschneiden", Some("CMDORCTRL+X")),
-                &tracked(Action::Copy, "Kopieren", Some("CMDORCTRL+C")),
-                &tracked(Action::Paste, "Einfügen", Some("CMDORCTRL+V")),
-                &tracked(Action::SelectAll, "Alles auswählen", Some("CMDORCTRL+A")),
-                &PredefinedMenuItem::separator(),
-                &tracked(Action::Duplicate, "Duplizieren", Some("CMDORCTRL+D")),
-                &tracked(Action::Delete, "Objekt löschen", None),
-                &tracked(Action::Deselect, "Auswahl aufheben", None),
-            ],
-        )
-        .ok()?;
+        let (cut, copy, paste, select_all) = (
+            tracked(Action::Cut, "Ausschneiden", Some("CMDORCTRL+X")),
+            tracked(Action::Copy, "Kopieren", Some("CMDORCTRL+C")),
+            tracked(Action::Paste, "Einfügen", Some("CMDORCTRL+V")),
+            tracked(Action::SelectAll, "Alles auswählen", Some("CMDORCTRL+A")),
+        );
+        // Texterkennung gibt es bisher nur auf macOS (Apple Vision).
+        let copy_text = tracked(Action::CopyText, "Text kopieren", Some("CMDORCTRL+SHIFT+C"));
+        let (duplicate, delete, deselect) = (
+            tracked(Action::Duplicate, "Duplizieren", Some("CMDORCTRL+D")),
+            tracked(Action::Delete, "Objekt löschen", None),
+            tracked(Action::Deselect, "Auswahl aufheben", None),
+        );
+        let sep = PredefinedMenuItem::separator();
+        let mut edit_items: Vec<&dyn IsMenuItem> = vec![&undo, &redo, &sep, &cut, &copy];
+        if crate::ocr::AVAILABLE {
+            edit_items.push(&copy_text);
+        }
+        edit_items.extend([&paste as &dyn IsMenuItem, &select_all, &sep, &duplicate, &delete, &deselect]);
+        let edit = Submenu::with_items("Bearbeiten", true, &edit_items).ok()?;
 
         // Bild
         let image = Submenu::with_items(
@@ -431,7 +436,7 @@ mod tests {
 
     #[test]
     fn accelerators_parse() {
-        for s in ["CMDORCTRL+COMMA", "CMDORCTRL+Q", "CMDORCTRL+O", "CMDORCTRL+S", "CMDORCTRL+SHIFT+S", "CMDORCTRL+W", "CMDORCTRL+Z", "CMDORCTRL+SHIFT+Z", "CMDORCTRL+X", "CMDORCTRL+C", "CMDORCTRL+V", "CMDORCTRL+A", "CMDORCTRL+D", "CMDORCTRL+0", "CMDORCTRL+1", "CMDORCTRL+EQUAL", "CMDORCTRL+MINUS"] {
+        for s in ["CMDORCTRL+COMMA", "CMDORCTRL+Q", "CMDORCTRL+O", "CMDORCTRL+S", "CMDORCTRL+SHIFT+S", "CMDORCTRL+SHIFT+C", "CMDORCTRL+W", "CMDORCTRL+Z", "CMDORCTRL+SHIFT+Z", "CMDORCTRL+X", "CMDORCTRL+C", "CMDORCTRL+V", "CMDORCTRL+A", "CMDORCTRL+D", "CMDORCTRL+0", "CMDORCTRL+1", "CMDORCTRL+EQUAL", "CMDORCTRL+MINUS"] {
             assert!(s.parse::<tray_icon::menu::accelerator::Accelerator>().is_ok(), "{s}");
         }
         for sc in Shortcut::defaults() {

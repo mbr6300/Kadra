@@ -441,6 +441,11 @@ pub fn draw_order(anns: &[Annotation]) -> impl Iterator<Item = &Annotation> {
 
 /// Rendert das komplette Dokument inkl. Effekten.
 pub fn render(doc: &Document) -> RgbaImage {
+    apply_frame_effects(render_content(doc), &doc.effects)
+}
+
+/// Bild mit allen Anmerkungen, aber ohne Rahmen/Ecken/Schatten – Koordinaten wie im Dokument.
+pub fn render_content(doc: &Document) -> RgbaImage {
     let base = apply_effects(&doc.image, &doc.annotations);
     let mut pm = to_pixmap(&base);
     for a in draw_order(&doc.annotations) {
@@ -449,8 +454,7 @@ pub fn render(doc: &Document) -> RgbaImage {
         }
         draw_shape(&mut pm, a, 0.0, false);
     }
-    let img = from_pixmap(&pm);
-    apply_frame_effects(img, &doc.effects)
+    from_pixmap(&pm)
 }
 
 /// Rahmen, abgerundete Ecken, Schlagschatten.
