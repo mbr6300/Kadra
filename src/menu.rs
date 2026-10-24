@@ -288,7 +288,7 @@ impl AppMenu {
         // Werkzeuge – Taste im Titel statt als Menü-Kürzel (sonst würde sie das Tippen von Text abfangen)
         let tool_items: Vec<MenuItem> = Tool::ALL
             .iter()
-            .filter(|t| **t != Tool::Crop)
+            .filter(|t| **t != Tool::Crop && t.available())
             .map(|t| tracked(Action::Tool(*t), &format!("{}   ({})", t.name(), t.key().name()), None))
             .collect();
         let tool_refs: Vec<&dyn IsMenuItem> = tool_items.iter().map(|i| i as &dyn IsMenuItem).collect();

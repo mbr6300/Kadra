@@ -60,6 +60,7 @@ Werkzeuge in der oberen Leiste (Taste in Klammern):
 |---|---|
 | Auswahl (V) | Objekte wählen, verschieben, über Griffe skalieren; Pfeiltasten verschieben (⇧ = 10 px) |
 | Markieren (M) | Bildbereich aufziehen (⇧ = Quadrat), Rahmen anpassen/verschieben; dann **Ausschneiden** ⌘X (Bereich wird transparent, Inhalt in die Zwischenablage), **Kopieren** ⌘C, **Duplizieren** ⌘D (verschiebbares Bildstück), **Löschen** ⌫ oder **Auf Auswahl zuschneiden** – über die Leiste unter der Markierung, das Eigenschaften-Panel oder das Menü Bearbeiten. Esc hebt die Markierung auf. |
+| Text auswählen (I, macOS) | Erkannten Text im Bild **mit der Maus markieren wie in einem Textdokument**: ziehen markiert (auch über mehrere Zeilen), Doppelklick ein Wort, Dreifachklick eine Zeile, ⇧-Klick erweitert, ⌘A markiert alles. Markierter Text wird blau hinterlegt und lässt sich mit ⌘C oder über die Leiste darunter kopieren (Spalten als Tabulator, Absätze bleiben erhalten). Die Erkennung läuft beim Wählen des Werkzeugs im Hintergrund und nach Änderungen am Bild erneut. |
 | Pfeil (A) | Pfeil mit Spitze; ⇧ rastet auf 45° |
 | Text (T) | Text mit optionalem Hintergrund; Doppelklick zum Bearbeiten |
 | Formen: Rechteck (R), Ellipse (E), Linie (L) | Mit/ohne Füllung; ⇧ = Quadrat/Kreis bzw. 45° |
@@ -142,7 +143,7 @@ macOS-Version, mit diesen Unterschieden:
 - **Kürzel** mit **Strg** statt ⌘ und **Umschalt** statt ⇧ (z. B. Strg+S, Strg+Umschalt+Z);
   globale Aufnahme-Kürzel standardmäßig Strg+Umschalt+1 … 4. Globale Kürzel können zusätzlich die
   Windows-Taste nutzen.
-- **Texterkennung** („Text kopieren“) gibt es vorerst nur unter macOS; unter Windows ist sie ausgeblendet.
+- **Texterkennung** („Text kopieren“, Werkzeug „Text auswählen“) gibt es vorerst nur unter macOS; unter Windows ist sie ausgeblendet.
 - **Menüleiste im Fenster:** Datei (inkl. Einstellungen und Beenden), Bearbeiten, Bild, Werkzeuge,
   Darstellung, Hilfe (inkl. „Über Kadra“).
 - **Hintergrundbetrieb:** Schließen blendet das Fenster aus; Kadra bleibt mit Symbol im
@@ -170,7 +171,7 @@ Konflikterkennung). Gespeichert in `~/Library/Application Support/Kadra/settings
 |---|---|
 | Global (Standard) | ⌃⇧1 Bereich · ⌃⇧2 Fenster · ⌃⇧3 Bildschirm · ⌃⇧4 Alle Bildschirme |
 | Overlay | Tab/⇧Tab Fenster dahinter · L Fensterliste · Enter ganzer Bildschirm · Esc Abbrechen |
-| Editor-Werkzeuge | V M A T R E L N H F B X K C P S |
+| Editor-Werkzeuge | V M I A T R E L N H F B X K C P S |
 | Bearbeiten | ⌘Z / ⌘⇧Z · ⌘D · ⌘⇧C Text kopieren (macOS) · ⌫ · Pfeiltasten · Esc |
 | Datei | ⌘C Kopieren · ⌘S Speichern · ⌘⇧S Speichern unter · ⌘O Öffnen |
 
@@ -187,7 +188,8 @@ src/
 ├── editor.rs     Editor: Werkzeuge, Interaktion, Undo, Zuschneiden, Bildoperationen
 ├── doc.rs        Dokumentmodell (Bild + Anmerkungen, serialisierbar)
 ├── render.rs     Export-Rendering (tiny-skia, ab_glyph), Effekte, Füllen
-├── ocr.rs        Texterkennung (macOS: Apple Vision), Zeilen in Lesereihenfolge
+├── ocr.rs        Texterkennung (macOS: Apple Vision), Zeilen und Zeichengrenzen, Lesereihenfolge
+├── textsel.rs    Werkzeug „Text auswählen“: Einfügemarken, Markierung über Zeilen, Wort/Zeile
 ├── library.rs    Bibliothek, Einstellungen, Export aller Formate inkl. PDF-Writer
 ├── hotkeys.rs    Globale, frei belegbare Tastenkürzel (global-hotkey)
 ├── tray.rs       Menüleisten-Symbol und -Menü (tray-icon)

@@ -12,12 +12,16 @@ use image::{imageops, RgbaImage};
 
 use crate::doc::{dist_to_segment, p, pos, rect, Annotation, Document, Effects, Piece, Rgba, Shape, Style, P};
 use crate::render;
+use crate::textsel::{Caret, TextLayer};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Tool {
     Select,
     /// Bildbereich markieren → ausschneiden, kopieren, duplizieren, löschen.
     Marquee,
+    /// Erkannten Text im Bild markieren und kopieren (wie in einem Textdokument).
+    TextSelect,
     Arrow,
     Line,
     Rect,
@@ -35,9 +39,10 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 16] = [
+    pub const ALL: [Tool; 17] = [
         Tool::Select,
         Tool::Marquee,
+        Tool::TextSelect,
         Tool::Arrow,
         Tool::Line,
         Tool::Rect,
@@ -58,6 +63,7 @@ impl Tool {
         match self {
             Tool::Select => "⬉",
             Tool::Marquee => "⬚",
+            Tool::TextSelect => crate::ui_kit::ICON_TEXT_SELECT,
             Tool::Arrow => "➡",
             Tool::Line => "╱",
             Tool::Rect => crate::ui_kit::ICON_RECT,
@@ -79,6 +85,7 @@ impl Tool {
         match self {
             Tool::Select => "Auswahl",
             Tool::Marquee => "Markieren",
+            Tool::TextSelect => "Text auswählen",
             Tool::Arrow => "Pfeil",
             Tool::Line => "Linie",
             Tool::Rect => "Rechteck",
@@ -100,6 +107,7 @@ impl Tool {
         match self {
             Tool::Select => Key::V,
             Tool::Marquee => Key::M,
+            Tool::TextSelect => Key::I,
             Tool::Arrow => Key::A,
             Tool::Line => Key::L,
             Tool::Rect => Key::R,
@@ -153,6 +161,11 @@ impl Tool {
             _ => base,
         }
     }
+
+    /// Auf diesem System nutzbar? „Text auswählen“ braucht die Texterkennung.
+    pub fn available(self) -> bool {
+        self != Tool::TextSelect || crate::ocr::AVAILABLE
+    }
 }
 
 /// Werkzeuggruppe in der oberen Leiste; mehrere Werkzeuge teilen sich einen Button.
@@ -161,9 +174,22 @@ pub struct ToolGroup {
     pub tools: &'static [Tool],
 }
 
-pub const MAIN_GROUPS: [ToolGroup; 10] = [
+/// Gruppen der Leiste ohne die auf diesem System nicht verfügbaren.
+fn main_groups() -> &'static [ToolGroup] {
+    static GROUPS: std::sync::OnceLock<Vec<ToolGroup>> = std::sync::OnceLock::new();
+    GROUPS.get_or_init(|| {
+        ALL_GROUPS
+            .iter()
+            .filter(|g| g.tools.iter().all(|t| t.available()))
+            .map(|g| ToolGroup { name: g.name, tools: g.tools })
+            .collect()
+    })
+}
+
+const ALL_GROUPS: [ToolGroup; 11] = [
     ToolGroup { name: "Auswahl", tools: &[Tool::Select] },
     ToolGroup { name: "Markieren", tools: &[Tool::Marquee] },
+    ToolGroup { name: "Text wählen", tools: &[Tool::TextSelect] },
     ToolGroup { name: "Pfeil", tools: &[Tool::Arrow] },
     ToolGroup { name: "Text", tools: &[Tool::Text] },
     ToolGroup { name: "Formen", tools: &[Tool::Rect, Tool::Ellipse, Tool::Line] },
@@ -178,7 +204,7 @@ pub const MAIN_GROUPS: [ToolGroup; 10] = [
 pub const MORE_TOOLS: [Tool; 2] = [Tool::Pen, Tool::Spotlight];
 
 fn group_of(t: Tool) -> Option<&'static ToolGroup> {
-    MAIN_GROUPS.iter().find(|g| g.tools.contains(&t))
+    main_groups().iter().find(|g| g.tools.contains(&t))
 }
 
 /// Werkzeugleiste (Mitte der oberen Leiste). Ohne offenes Bild ausgegraut.
@@ -187,8 +213,8 @@ pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>, visible: usize) {
     use crate::ui_kit::{bar_button, bar_separator, Look};
     let enabled = editor.is_some();
     let current = editor.as_ref().map(|e| e.tool);
-    let visible = visible.clamp(1, MAIN_GROUPS.len());
-    for g in &MAIN_GROUPS[..visible] {
+    let visible = visible.clamp(1, main_groups().len());
+    for g in &main_groups()[..visible] {
         let shown = current
             .filter(|t| g.tools.contains(t))
             .or_else(|| editor.as_ref().and_then(|e| e.group_last.get(g.name).copied()))
@@ -204,7 +230,7 @@ pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>, visible: usize) {
     }
     bar_separator(ui);
     // Mehr-Menü: übergelaufene Gruppen + seltene Werkzeuge
-    let more: Vec<Tool> = MAIN_GROUPS[visible..].iter().flat_map(|g| g.tools.iter().copied()).chain(MORE_TOOLS).collect();
+    let more: Vec<Tool> = main_groups()[visible..].iter().flat_map(|g| g.tools.iter().copied()).chain(MORE_TOOLS).collect();
     let more_selected = current.is_some_and(|t| more.contains(&t));
     let icon = current.filter(|t| more.contains(t)).map(|t| t.icon()).unwrap_or("⋯");
     let resp = bar_button(ui, icon, "Mehr", Look::Tool { selected: more_selected }, enabled, true);
@@ -225,7 +251,7 @@ pub fn tool_bar(ui: &mut Ui, mut editor: Option<&mut Editor>, visible: usize) {
 pub fn tool_bar_width(ui: &Ui, visible: usize, compact: bool) -> f32 {
     use crate::ui_kit::bar_button_width;
     let gap = ui.spacing().item_spacing.x;
-    let groups: f32 = MAIN_GROUPS[..visible.clamp(1, MAIN_GROUPS.len())]
+    let groups: f32 = main_groups()[..visible.clamp(1, main_groups().len())]
         .iter()
         .map(|g| bar_button_width(ui, g.name, false, compact) + gap)
         .sum();
@@ -233,7 +259,7 @@ pub fn tool_bar_width(ui: &Ui, visible: usize, compact: bool) -> f32 {
 }
 
 pub fn tool_group_count() -> usize {
-    MAIN_GROUPS.len()
+    main_groups().len()
 }
 
 #[derive(Clone)]
@@ -251,6 +277,8 @@ enum Drag {
     Crop { grip: Option<(i8, i8)>, orig: Rect, start: Pos2 },
     /// Neue Markierung aufziehen.
     MarqueeNew { start: Pos2 },
+    /// Text markieren: `anchor` = Einfügemarke beim Drücken.
+    TextSel { anchor: Caret },
     /// Bestehende Markierung ändern (wie beim Zuschneiderahmen).
     Marquee { grip: Option<(i8, i8)>, orig: Rect, start: Pos2 },
 }
@@ -292,6 +320,37 @@ pub struct Editor {
     pub clipboard_out: Option<RgbaImage>,
     /// Text erkennen und kopieren wurde angefordert (die App führt es im Hintergrund aus).
     pub copy_text_requested: bool,
+    /// Werkzeug „Text auswählen“: erkannter Text (im Hintergrund) und Markierung darin.
+    text_layer: TextState,
+    text_sel: Option<(Caret, Caret)>,
+    /// Text, den die App in die Zwischenablage legen soll.
+    pub text_out: Option<String>,
+}
+
+/// Stand des Dokuments, aus dem Text erkannt wurde (Bild + Anmerkungen).
+type DocKey = (usize, Vec<Annotation>);
+
+enum TextState {
+    Idle,
+    Running { key: DocKey, rx: Receiver<Result<Vec<crate::ocr::Line>, String>> },
+    Ready { key: DocKey, layer: TextLayer },
+    Failed { key: DocKey, msg: String },
+}
+
+impl TextState {
+    fn key(&self) -> Option<&DocKey> {
+        match self {
+            TextState::Idle => None,
+            TextState::Running { key, .. } | TextState::Ready { key, .. } | TextState::Failed { key, .. } => Some(key),
+        }
+    }
+
+    fn layer(&self) -> Option<&TextLayer> {
+        match self {
+            TextState::Ready { layer, .. } => Some(layer),
+            _ => None,
+        }
+    }
 }
 
 fn c32(c: Rgba) -> Color32 {
@@ -342,7 +401,71 @@ impl Editor {
             checker: None,
             clipboard_out: None,
             copy_text_requested: false,
+            text_layer: TextState::Idle,
+            text_sel: None,
+            text_out: None,
         }
+    }
+
+    // ---------- Text auswählen ----------
+
+    fn doc_key_matches(&self, key: &DocKey) -> bool {
+        key.0 == Arc::as_ptr(&self.doc.image) as usize && key.1 == self.doc.annotations
+    }
+
+    /// Text des aktuellen Stands erkennen (einmal je Stand, im Hintergrund) und Ergebnis abholen.
+    fn update_text_layer(&mut self, ctx: &egui::Context) {
+        if let TextState::Running { key, rx } = &self.text_layer {
+            let done = match rx.try_recv() {
+                Ok(Ok(lines)) => Some(TextState::Ready { key: key.clone(), layer: TextLayer::new(lines) }),
+                Ok(Err(msg)) => Some(TextState::Failed { key: key.clone(), msg }),
+                Err(TryRecvError::Disconnected) => {
+                    Some(TextState::Failed { key: key.clone(), msg: "Texterkennung abgebrochen".into() })
+                }
+                Err(TryRecvError::Empty) => None,
+            };
+            if let Some(s) = done {
+                self.text_layer = s;
+            }
+        }
+        if self.tool != Tool::TextSelect || self.text_layer.key().is_some_and(|k| self.doc_key_matches(k)) {
+            return;
+        }
+        // Bild oder Anmerkungen geändert → neu erkennen; die alte Markierung gilt nicht mehr.
+        self.text_sel = None;
+        let key = (Arc::as_ptr(&self.doc.image) as usize, self.doc.annotations.clone());
+        let (doc, ctx) = (self.doc.clone(), ctx.clone());
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            // Wie „Text kopieren“: das Bild so, wie es aussieht (Geschwärztes bleibt unlesbar).
+            let _ = tx.send(crate::ocr::recognize(&render::render_content(&doc)));
+            ctx.request_repaint();
+        });
+        self.text_layer = TextState::Running { key, rx };
+    }
+
+    /// Markierter Text, falls etwas markiert ist.
+    pub fn selected_text(&self) -> Option<String> {
+        let (a, b) = self.text_sel?;
+        let layer = self.text_layer.layer()?;
+        (layer.count(a, b) > 0).then(|| layer.text(a, b))
+    }
+
+    /// ⌘A im Werkzeug „Text auswählen“: gesamten Text markieren (false = anderes Werkzeug).
+    pub fn select_all_text(&mut self) -> bool {
+        if self.tool != Tool::TextSelect {
+            return false;
+        }
+        if let Some(all) = self.text_layer.layer().and_then(|l| l.all()) {
+            self.text_sel = Some(all);
+        }
+        true
+    }
+
+    fn all_text(&self) -> Option<String> {
+        let layer = self.text_layer.layer()?;
+        let (a, b) = layer.all()?;
+        Some(layer.text(a, b))
     }
 
     pub fn is_busy(&self) -> bool {
@@ -496,6 +619,9 @@ impl Editor {
         self.crop_aspect = None;
         if t != Tool::Marquee {
             self.marquee = None;
+        }
+        if t != Tool::TextSelect {
+            self.text_sel = None;
         }
         if t != Tool::Select {
             self.selected = None;
@@ -872,6 +998,46 @@ impl Editor {
             });
             ui.add_space(4.0);
             ui.weak(crate::ui_kit::keys("⌘V fügt ein Bild aus der Zwischenablage als verschiebbares Bildstück ein."));
+        } else if kind == Tool::TextSelect && sel.is_none() {
+            ui.label("Text im Bild mit der Maus markieren – wie in einem Textdokument – und kopieren.");
+            ui.weak(crate::ui_kit::keys("Doppelklick: Wort · Dreifachklick: Zeile · ⇧-Klick: Markierung erweitern · ⌘A: alles"));
+            ui.add_space(4.0);
+            match &self.text_layer {
+                TextState::Running { .. } => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Text wird erkannt …");
+                    });
+                }
+                TextState::Failed { msg, .. } => {
+                    ui.colored_label(ui.visuals().warn_fg_color, msg);
+                }
+                TextState::Ready { layer, .. } => {
+                    let n = self.text_sel.map_or(0, |(a, b)| layer.count(a, b));
+                    let lines = layer.lines.len();
+                    ui.label(RichText::new(match (lines, n) {
+                        (0, _) => "Kein Text im Bild erkannt".to_string(),
+                        (_, 0) => format!("{lines} Textzeilen erkannt"),
+                        (_, n) => format!("{n} Zeichen markiert"),
+                    }).strong());
+                }
+                TextState::Idle => {}
+            }
+            ui.add_space(6.0);
+            let wide = Vec2::new(ui.available_width(), 30.0);
+            let has_sel = self.selected_text().is_some();
+            let has_text = self.text_layer.layer().is_some_and(|l| !l.is_empty());
+            if ui.add_enabled(has_sel, egui::Button::new(crate::ui_kit::keys("⧉  Markierten Text kopieren   ⌘C")).min_size(wide)).clicked() {
+                self.text_out = self.selected_text();
+            }
+            if ui.add_enabled(has_text, egui::Button::new(crate::ui_kit::keys("Alles auswählen   ⌘A")).min_size(wide)).clicked() {
+                self.select_all_text();
+            }
+            if ui.add_enabled(has_text, egui::Button::new("🔤  Ganzen Text kopieren").min_size(wide)).clicked() {
+                self.text_out = self.all_text();
+            }
+            ui.add_space(4.0);
+            ui.weak("Erkennung lokal mit Apple Vision (Deutsch und Englisch). Geschwärzte Stellen bleiben unlesbar.");
         } else if kind != Tool::Select {
             let original = sel.map(|i| self.doc.annotations[i].style.clone()).unwrap_or_else(|| self.styles[&kind].clone());
             let mut st = original.clone();
@@ -1021,6 +1187,7 @@ impl Editor {
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.selected = None;
             self.marquee = None;
+            self.text_sel = None;
             if self.tool == Tool::Crop {
                 self.cancel_crop();
             }
@@ -1052,7 +1219,7 @@ impl Editor {
                 self.doc.annotations[i].shape.translate(d);
             }
         }
-        for t in Tool::ALL {
+        for t in Tool::ALL.into_iter().filter(|t| t.available()) {
             if ctx.input(|i| i.key_pressed(t.key())) {
                 self.set_tool(t);
             }
@@ -1095,6 +1262,7 @@ impl Editor {
         let ctx = ui.ctx().clone();
         self.refresh_texture(&ctx);
         self.refresh_piece_textures(&ctx);
+        self.update_text_layer(&ctx);
         let avail = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(avail, Sense::click_and_drag());
         let ppp = ctx.pixels_per_point();
@@ -1169,6 +1337,15 @@ impl Editor {
                         crop_grip(mr, to_scr(start), false).map(|grip| Drag::Marquee { grip, orig: m, start })
                     })
                     .or(Some(Drag::MarqueeNew { start })),
+                // Markierung ab der Einfügemarke unter dem Zeiger (⇧ = bestehende erweitern)
+                Tool::TextSelect => self.text_layer.layer().and_then(|l| l.caret_at(start)).map(|c| {
+                    let anchor = match self.text_sel {
+                        Some((a, _)) if shift => a,
+                        _ => c,
+                    };
+                    self.text_sel = Some((anchor, c));
+                    Drag::TextSel { anchor }
+                }),
                 Tool::Text | Tool::Step | Tool::Fill => None,
                 t => {
                     let shape = new_shape(t, p(start));
@@ -1221,6 +1398,11 @@ impl Editor {
                         let bounds = Rect::from_min_size(Pos2::ZERO, size);
                         let aspect = shift.then(|| orig.width() / orig.height());
                         self.marquee = Some(drag_crop(*orig, *grip, cur - *start, bounds, aspect));
+                    }
+                    Drag::TextSel { anchor } => {
+                        if let Some(c) = self.text_layer.layer().and_then(|l| l.caret_at(cur)) {
+                            self.text_sel = Some((*anchor, c));
+                        }
                     }
                 }
             }
@@ -1294,7 +1476,23 @@ impl Editor {
                         }
                     }
                     Tool::Select => self.selected = self.hit(q, tol),
+                    // Klick hebt die Markierung auf, ⇧-Klick erweitert sie bis zum Zeiger
+                    Tool::TextSelect => {
+                        let c = self.text_layer.layer().and_then(|l| l.caret_at(q));
+                        self.text_sel = match (self.text_sel, c) {
+                            (Some((a, _)), Some(c)) if shift => Some((a, c)),
+                            _ => None,
+                        };
+                    }
                     _ => {}
+                }
+            }
+        }
+        // Doppelklick = Wort, Dreifachklick = Zeile
+        if self.tool == Tool::TextSelect && (resp.double_clicked() || resp.triple_clicked()) {
+            if let (Some(layer), Some(ptr)) = (self.text_layer.layer(), pointer) {
+                if let Some(c) = layer.caret_at(to_img(ptr)) {
+                    self.text_sel = Some(if resp.triple_clicked() { layer.line_range(c.line) } else { layer.word_at(c) });
                 }
             }
         }
@@ -1319,6 +1517,14 @@ impl Editor {
                     }
                 }
                 Tool::Text => egui::CursorIcon::Text,
+                Tool::TextSelect => {
+                    let over_text = self.text_layer.layer().zip(pointer).is_some_and(|(l, ptr)| l.line_at(to_img(ptr), 4.0 / zoom).is_some());
+                    if over_text || matches!(self.drag, Some(Drag::TextSel { .. })) {
+                        egui::CursorIcon::Text
+                    } else {
+                        egui::CursorIcon::Default
+                    }
+                }
                 Tool::Crop | Tool::Marquee => {
                     let frame = if self.tool == Tool::Crop { self.crop } else { self.marquee };
                     let grip = match &self.drag {
@@ -1553,6 +1759,77 @@ impl Editor {
                     Some(3) => self.delete_marquee(),
                     Some(4) => self.crop_to_marquee(),
                     _ => {}
+                }
+            }
+        }
+
+        // Text auswählen: erkannte Zeilen dezent, Markierung blau, Status und Aktionsleiste
+        if self.tool == Tool::TextSelect {
+            let scr = |r: Rect| Rect::from_min_max(to_scr(r.min), to_scr(r.max));
+            let mut bar = None;
+            let status = match &self.text_layer {
+                TextState::Running { .. } => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    Some("Text wird erkannt …".to_string())
+                }
+                TextState::Failed { msg, .. } => Some(msg.clone()),
+                TextState::Ready { layer, .. } if layer.is_empty() => Some("Kein Text im Bild erkannt".into()),
+                TextState::Ready { layer, .. } => {
+                    for i in 0..layer.lines.len() {
+                        clip.rect_filled(scr(layer.line_rect(i)).expand(1.0), 2.0, Color32::from_rgba_unmultiplied(0, 122, 255, 16));
+                    }
+                    if let Some((a, b)) = self.text_sel {
+                        let pieces = layer.pieces(a, b);
+                        let mut area: Option<Rect> = None;
+                        for (i, f, t) in &pieces {
+                            let r = scr(layer.piece_rect(*i, *f, *t));
+                            clip.rect_filled(r, 1.0, Color32::from_rgba_unmultiplied(0, 122, 255, 95));
+                            area = Some(area.map_or(r, |x| x.union(r)));
+                        }
+                        bar = area.filter(|_| self.drag.is_none()).map(|r| (r, layer.count(a, b)));
+                    }
+                    None
+                }
+                TextState::Idle => None,
+            };
+            if let Some(msg) = status {
+                egui::Area::new(Id::new("kadra_text_status"))
+                    .order(egui::Order::Foreground)
+                    .pivot(Align2::CENTER_TOP)
+                    .fixed_pos(avail.center_top() + Vec2::new(0.0, 12.0))
+                    .show(&ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(msg);
+                        });
+                    });
+            }
+            if let Some((r, n)) = bar {
+                let below = r.max.y + 56.0 < avail.max.y;
+                let (anchor, pivot) = if below {
+                    (Pos2::new(r.center().x, r.max.y + 10.0), Align2::CENTER_TOP)
+                } else {
+                    (Pos2::new(r.center().x, r.min.y - 10.0), Align2::CENTER_BOTTOM)
+                };
+                let (mut copy, mut all) = (false, false);
+                egui::Area::new(Id::new("kadra_text_bar"))
+                    .order(egui::Order::Foreground)
+                    .pivot(pivot)
+                    .fixed_pos(anchor)
+                    .show(&ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(if n == 1 { "1 Zeichen".to_string() } else { format!("{n} Zeichen") });
+                                ui.add_space(4.0);
+                                copy = ui.button("⧉ Kopieren").on_hover_text(crate::ui_kit::keys("⌘C")).clicked();
+                                all = ui.button("Alles auswählen").on_hover_text(crate::ui_kit::keys("⌘A")).clicked();
+                            });
+                        });
+                    });
+                if copy {
+                    self.text_out = self.selected_text();
+                }
+                if all {
+                    self.select_all_text();
                 }
             }
         }
@@ -2137,5 +2414,60 @@ fn style_ui(ui: &mut Ui, kind: Tool, st: &mut Style) {
     }
     if !matches!(kind, Tool::Blur | Tool::Pixelate | Tool::Redact | Tool::Spotlight | Tool::Highlight | Tool::Fill) {
         ui.checkbox(&mut st.shadow, "Schatten");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod text_select_tests {
+    use super::*;
+
+    /// Erkennung abwarten (läuft im Hintergrund-Thread).
+    fn wait_ready(ed: &mut Editor, ctx: &egui::Context) {
+        for _ in 0..200 {
+            ed.update_text_layer(ctx);
+            if !matches!(ed.text_layer, TextState::Running { .. }) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("Texterkennung hängt");
+    }
+
+    #[test]
+    fn recognizes_selects_and_reruns_after_change() {
+        let mut doc = Document::new(RgbaImage::from_pixel(700, 200, image::Rgba([255, 255, 255, 255])));
+        let style = Style { stroke: [0, 0, 0, 255], font_size: 48.0, shadow: false, ..Style::default() };
+        doc.annotations.push(Annotation { shape: Shape::Text { pos: [20.0, 20.0], text: "Rechnung 2026\nBetrag fällig".into() }, style });
+        let mut ed = Editor::new("t".into(), doc);
+        let ctx = egui::Context::default();
+
+        // Andere Werkzeuge stoßen keine Erkennung an
+        ed.update_text_layer(&ctx);
+        assert!(matches!(ed.text_layer, TextState::Idle));
+
+        ed.set_tool(Tool::TextSelect);
+        wait_ready(&mut ed, &ctx);
+        assert!(ed.selected_text().is_none(), "anfangs nichts markiert");
+        assert!(ed.select_all_text());
+        let all = ed.selected_text().expect("Text markiert");
+        assert!(all.contains("Rechnung 2026") && all.contains("Betrag"), "erkannt: {all:?}");
+
+        // Wort per Einfügemarke: Doppelklick-Logik auf „2026“
+        let layer = ed.text_layer.layer().unwrap();
+        let line = layer.lines.iter().position(|l| l.text.contains("2026")).unwrap();
+        let ch = layer.lines[line].text.chars().position(|c| c == '2').unwrap() + 1;
+        let (a, b) = layer.word_at(Caret { line, ch });
+        ed.text_sel = Some((a, b));
+        assert_eq!(ed.selected_text().as_deref(), Some("2026"));
+
+        // Werkzeugwechsel hebt die Markierung auf; Änderung am Bild → neue Erkennung
+        ed.set_tool(Tool::Select);
+        assert!(ed.text_sel.is_none());
+        ed.doc.annotations.clear();
+        ed.set_tool(Tool::TextSelect);
+        ed.update_text_layer(&ctx);
+        assert!(matches!(ed.text_layer, TextState::Running { .. }), "neuer Stand wird neu erkannt");
+        wait_ready(&mut ed, &ctx);
+        assert!(ed.text_layer.layer().is_some_and(|l| l.is_empty()), "leeres Bild → kein Text");
     }
 }

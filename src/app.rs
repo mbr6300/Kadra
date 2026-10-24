@@ -319,10 +319,19 @@ impl KadraApp {
                     open_url(&self.settings.save_dir.to_string_lossy());
                 }
                 // Mit Markierung wirken Kopieren/Ausschneiden auf den markierten Bereich
-                Action::Copy => match self.editor.as_mut().filter(|e| e.has_marquee()) {
-                    Some(ed) => ed.clipboard_out = ed.marquee_piece(),
-                    None => self.copy(),
-                },
+                // Markierter Text vor markiertem Bereich vor ganzem Bild
+                Action::Copy => {
+                    if let Some(ed) = self.editor.as_mut() {
+                        if let Some(text) = ed.selected_text() {
+                            ed.text_out = Some(text);
+                            continue;
+                        }
+                    }
+                    match self.editor.as_mut().filter(|e| e.has_marquee()) {
+                        Some(ed) => ed.clipboard_out = ed.marquee_piece(),
+                        None => self.copy(),
+                    }
+                }
                 Action::Cut => {
                     if let Some(ed) = self.editor.as_mut().filter(|e| e.has_marquee()) {
                         ed.clipboard_out = ed.cut_marquee();
@@ -336,7 +345,11 @@ impl KadraApp {
                     },
                     None => self.notify("Kein Bild in der Zwischenablage"),
                 },
-                Action::SelectAll => {}
+                Action::SelectAll => {
+                    if let Some(ed) = &mut self.editor {
+                        ed.select_all_text();
+                    }
+                }
                 Action::CopyText => self.copy_text(),
                 Action::Docs => open_url(&format!("{}/blob/master/docs/DOKUMENTATION.md", menu::REPO_URL)),
                 Action::Website => open_url(menu::REPO_URL),
@@ -1272,6 +1285,14 @@ impl eframe::App for KadraApp {
         if let Some(img) = self.editor.as_mut().and_then(|e| e.clipboard_out.take()) {
             match copy_to_clipboard(&img) {
                 Ok(()) => self.notify(format!("Bereich ({} × {} px) in die Zwischenablage kopiert", img.width(), img.height())),
+                Err(e) => self.notify(format!("Zwischenablage: {e}")),
+            }
+        }
+        // Im Editor markierten (erkannten) Text in die Zwischenablage legen
+        if let Some(text) = self.editor.as_mut().and_then(|e| e.text_out.take()) {
+            let n = text.chars().filter(|c| !c.is_whitespace()).count();
+            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                Ok(()) => self.notify(if n == 1 { "1 Zeichen kopiert".to_string() } else { format!("{n} Zeichen kopiert") }),
                 Err(e) => self.notify(format!("Zwischenablage: {e}")),
             }
         }

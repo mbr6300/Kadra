@@ -15,6 +15,7 @@ mod ocr;
 mod overlay;
 mod platform;
 mod render;
+mod textsel;
 mod tray;
 mod ui_kit;
 

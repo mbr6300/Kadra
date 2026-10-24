@@ -118,6 +118,7 @@ pub fn bar_button(ui: &mut Ui, icon: &str, label: &str, look: Look, enabled: boo
 pub const ICON_RECT: &str = "▭";
 pub const ICON_STEP: &str = "🔢";
 pub const ICON_MARKER: &str = "🖊";
+pub const ICON_TEXT_SELECT: &str = "🔤";
 
 /// Leisten-Symbol (ca. 21 pt) zentriert an `c`.
 fn paint_icon(p: &egui::Painter, c: egui::Pos2, icon: &str, col: Color32) {
@@ -141,6 +142,16 @@ fn paint_icon(p: &egui::Painter, c: egui::Pos2, icon: &str, col: Color32) {
             p.add(egui::Shape::convex_polygon(tip.to_vec(), Color32::TRANSPARENT, Stroke::new(1.8, col)));
             p.line_segment([pos2(c.x + 1.0, c.y + 3.0), pos2(c.x - 3.0, c.y + 4.0)], Stroke::new(1.8, col));
             p.line_segment([pos2(c.x - 3.0, c.y + 4.0), pos2(c.x - 3.0, c.y - 1.0)], Stroke::new(1.8, col));
+        }
+        ICON_TEXT_SELECT => {
+            // Markierter Textblock mit Textcursor (I-Balken) am Ende
+            let block = Rect::from_min_max(pos2(c.x - 10.0, c.y - 6.0), pos2(c.x + 3.0, c.y + 6.0));
+            p.rect_filled(block, CornerRadius::same(2), col.gamma_multiply(0.4));
+            let (x, st) = (c.x + 5.0, Stroke::new(1.8, col));
+            p.line_segment([pos2(x, c.y - 9.0), pos2(x, c.y + 9.0)], st);
+            for y in [c.y - 9.0, c.y + 9.0] {
+                p.line_segment([pos2(x - 3.0, y), pos2(x + 3.0, y)], st);
+            }
         }
         _ => {
             p.text(c, Align2::CENTER_CENTER, icon, FontId::proportional(21.0), col);

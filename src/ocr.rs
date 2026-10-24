@@ -10,6 +10,85 @@ pub const AVAILABLE: bool = cfg!(target_os = "macos");
 pub struct Line {
     pub text: String,
     pub rect: [f32; 4],
+    /// x-Grenzen der Zeichen in Bildpixeln: `xs[i]` = linker Rand von Zeichen `i`,
+    /// `xs[n]` = rechter Rand der Zeile (Länge = Zeichenzahl + 1, aufsteigend).
+    pub xs: Vec<f32>,
+}
+
+impl Line {
+    /// Zeile mit gleichmäßig verteilten Zeichengrenzen.
+    #[cfg(test)]
+    pub fn uniform(text: &str, rect: [f32; 4]) -> Self {
+        let n = text.chars().count();
+        let xs = (0..=n).map(|i| rect[0] + rect[2] * i as f32 / n.max(1) as f32).collect();
+        Self { text: text.into(), rect, xs }
+    }
+}
+
+/// Zeichengrenzen einer Zeile aus Wort- und Zeichenboxen. `box_of(a, b)` liefert die x-Ausdehnung
+/// der Zeichen `a..b` (oder `None`). Innerhalb eines Worts werden Einzelboxen genutzt, wenn sie
+/// plausibel sind (aufsteigend, innerhalb des Worts), sonst nach den typischen Zeichenbreiten
+/// `width_of` verteilt (ein „l“ ist schmaler als ein „m“); Leerzeichen und fehlende Werte werden
+/// zwischen den Nachbarn interpoliert.
+// Plattformneutral; unter Windows fehlt bisher die Texterkennung, die sie nutzt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn char_bounds(
+    chars: &[char],
+    x0: f32,
+    x1: f32,
+    box_of: impl Fn(usize, usize) -> Option<(f32, f32)>,
+    width_of: impl Fn(char) -> f32,
+) -> Vec<f32> {
+    let n = chars.len();
+    let mut xs = vec![f32::NAN; n + 1];
+    let mut i = 0;
+    while i < n {
+        if chars[i].is_whitespace() {
+            i += 1;
+            continue;
+        }
+        let j = (i..n).find(|&k| chars[k].is_whitespace()).unwrap_or(n);
+        if let Some((l, r)) = box_of(i, j).filter(|(l, r)| r > l) {
+            xs[i] = l;
+            xs[j] = r;
+            let inner: Vec<f32> = (i + 1..j).filter_map(|k| box_of(k, k + 1).map(|(a, _)| a)).collect();
+            let precise = inner.len() == j - i - 1
+                && inner.windows(2).all(|w| w[1] > w[0])
+                && inner.iter().all(|x| *x > l && *x < r);
+            let w: Vec<f32> = chars[i..j].iter().map(|c| width_of(*c).max(0.01)).collect();
+            let total: f32 = w.iter().sum();
+            let mut acc = 0.0;
+            for (m, k) in (i + 1..j).enumerate() {
+                acc += w[m];
+                xs[k] = if precise { inner[m] } else { l + (r - l) * acc / total };
+            }
+        }
+        i = j;
+    }
+    if xs[0].is_nan() {
+        xs[0] = x0;
+    }
+    if xs[n].is_nan() {
+        xs[n] = x1.max(xs[0]);
+    }
+    // Lücken linear füllen, danach monoton machen
+    let mut k = 1;
+    while k < n {
+        if xs[k].is_nan() {
+            let b = (k..=n).find(|&m| !xs[m].is_nan()).unwrap_or(n);
+            let a = k - 1;
+            for m in k..b {
+                xs[m] = xs[a] + (xs[b] - xs[a]) * (m - a) as f32 / (b - a) as f32;
+            }
+            k = b;
+        } else {
+            k += 1;
+        }
+    }
+    for m in 1..=n {
+        xs[m] = xs[m].max(xs[m - 1]);
+    }
+    xs
 }
 
 /// Erkennt alle Textzeilen im Bild (Deutsch und Englisch, genaue Erkennung).
@@ -27,7 +106,7 @@ fn recognize_mac(img: &RgbaImage) -> Result<Vec<Line>, String> {
     use objc2::AnyThread;
     use objc2_core_foundation::CFData;
     use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage};
-    use objc2_foundation::{NSArray, NSDictionary, NSString};
+    use objc2_foundation::{NSArray, NSDictionary, NSRange, NSString};
     use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel};
 
     let (w, h) = (img.width() as usize, img.height() as usize);
@@ -79,7 +158,26 @@ fn recognize_mac(img: &RgbaImage) -> Result<Vec<Line>, String> {
         // Normalisiert, Ursprung unten links → Pixel, Ursprung oben links
         let bb = unsafe { obs.boundingBox() };
         let (bx, by, bw, bh) = (bb.origin.x as f32, bb.origin.y as f32, bb.size.width as f32, bb.size.height as f32);
-        lines.push(Line { text, rect: [bx * wf, (1.0 - by - bh) * hf, bw * wf, bh * hf] });
+        let rect = [bx * wf, (1.0 - by - bh) * hf, bw * wf, bh * hf];
+        // Zeichengrenzen über Boxen für Textbereiche (NSRange zählt UTF-16-Einheiten)
+        let chars: Vec<char> = text.chars().collect();
+        let mut u16 = Vec::with_capacity(chars.len() + 1);
+        let mut o = 0;
+        for c in &chars {
+            u16.push(o);
+            o += c.len_utf16();
+        }
+        u16.push(o);
+        let box_of = |a: usize, b: usize| {
+            let r = unsafe { best.boundingBoxForRange_error(NSRange::new(u16[a], u16[b] - u16[a])) }.ok()?;
+            let rb = unsafe { r.boundingBox() };
+            let (l, w) = (rb.origin.x as f32 * wf, rb.size.width as f32 * wf);
+            (l.is_finite() && w > 0.0).then_some((l, l + w))
+        };
+        // Ersatz-Zeichenbreiten aus der eingebauten Schrift (Vision liefert oft nur Wortboxen)
+        let width_of = |c: char| crate::render::text_size(c.encode_utf8(&mut [0; 4]), 100.0).0;
+        let xs = char_bounds(&chars, rect[0], rect[0] + rect[2], box_of, width_of);
+        lines.push(Line { text, rect, xs });
     }
     Ok(lines)
 }
@@ -89,30 +187,40 @@ pub fn recognize(_img: &RgbaImage) -> Result<Vec<Line>, String> {
     Err("Texterkennung ist auf diesem System noch nicht verfügbar".into())
 }
 
-/// Zeilen in Lesereihenfolge zusammensetzen: Zeilen auf gleicher Höhe nebeneinander
-/// (weiter Abstand = Tabulator, z. B. Tabellenspalten), größerer Zeilenabstand = Leerzeile.
-pub fn to_text(lines: &[Line]) -> String {
-    let mut sorted: Vec<&Line> = lines.iter().collect();
-    sorted.sort_by(|a, b| a.rect[1].total_cmp(&b.rect[1]));
-    // Zu Reihen gruppieren: vertikale Überlappung von mindestens der halben Zeilenhöhe
-    let mut rows: Vec<Vec<&Line>> = vec![];
-    for l in sorted {
+/// Lesereihenfolge: Reihen von oben nach unten (Zeilen, die sich vertikal mindestens zur halben
+/// Zeilenhöhe überlappen, bilden eine Reihe), innerhalb einer Reihe von links nach rechts.
+/// Liefert Indizes in `lines`.
+pub fn rows(lines: &[Line]) -> Vec<Vec<usize>> {
+    let mut sorted: Vec<usize> = (0..lines.len()).collect();
+    sorted.sort_by(|&a, &b| lines[a].rect[1].total_cmp(&lines[b].rect[1]));
+    let mut rows: Vec<Vec<usize>> = vec![];
+    for i in sorted {
+        let l = &lines[i];
         let (top, bottom) = (l.rect[1], l.rect[1] + l.rect[3]);
         let same_row = rows.last().is_some_and(|row| {
-            let r = row[0];
+            let r = &lines[row[0]];
             let overlap = bottom.min(r.rect[1] + r.rect[3]) - top.max(r.rect[1]);
             overlap > 0.5 * l.rect[3].min(r.rect[3])
         });
         if same_row {
-            rows.last_mut().unwrap().push(l);
+            rows.last_mut().unwrap().push(i);
         } else {
-            rows.push(vec![l]);
+            rows.push(vec![i]);
         }
     }
+    for row in &mut rows {
+        row.sort_by(|&a, &b| lines[a].rect[0].total_cmp(&lines[b].rect[0]));
+    }
+    rows
+}
+
+/// Zeilen in Lesereihenfolge zusammensetzen: Zeilen auf gleicher Höhe nebeneinander
+/// (weiter Abstand = Tabulator, z. B. Tabellenspalten), größerer Zeilenabstand = Leerzeile.
+pub fn to_text(lines: &[Line]) -> String {
+    let rows: Vec<Vec<&Line>> = rows(lines).into_iter().map(|r| r.into_iter().map(|i| &lines[i]).collect()).collect();
     let mut out = String::new();
     let mut prev_bottom: Option<(f32, f32)> = None;
-    for row in &mut rows {
-        row.sort_by(|a, b| a.rect[0].total_cmp(&b.rect[0]));
+    for row in &rows {
         let top = row.iter().map(|l| l.rect[1]).fold(f32::MAX, f32::min);
         let height = row.iter().map(|l| l.rect[3]).fold(0.0, f32::max);
         if let Some((bottom, h)) = prev_bottom {
@@ -140,7 +248,7 @@ mod tests {
     use super::*;
 
     fn line(text: &str, x: f32, y: f32, w: f32, h: f32) -> Line {
-        Line { text: text.into(), rect: [x, y, w, h] }
+        Line::uniform(text, [x, y, w, h])
     }
 
     #[test]
@@ -173,5 +281,53 @@ mod tests {
         assert!(text.contains("Kadra 2026"), "erkannt: {text:?}");
         assert!(text.contains("Zweite Zeile"), "erkannt: {text:?}");
         assert!(text.find("Kadra").unwrap() < text.find("Zweite").unwrap(), "Reihenfolge: {text:?}");
+
+        // Zeichengrenzen: „K“ beginnt dort, wo der Text „Hallo “ endet
+        let first = lines.iter().find(|l| l.text.contains("Kadra")).unwrap();
+        assert_eq!(first.xs.len(), first.text.chars().count() + 1);
+        assert!(first.xs.windows(2).all(|w| w[1] >= w[0]), "aufsteigend: {:?}", first.xs);
+        // Jede Grenze nahe der tatsächlich gerenderten Position (Breite des Textanfangs)
+        let chars: Vec<char> = first.text.chars().collect();
+        let errors: Vec<(String, f32)> = (1..chars.len())
+            .filter(|&k| !chars[k - 1].is_whitespace() && !chars[k].is_whitespace())
+            .map(|k| {
+                let prefix: String = chars[..k].iter().collect();
+                let expected = 30.0 + crate::render::text_size(&prefix, 56.0).0;
+                (prefix, first.xs[k] - expected)
+            })
+            .collect();
+        let worst = errors.iter().map(|(_, e)| e.abs()).fold(0.0, f32::max);
+        assert!(worst < 8.0, "Zeichengrenzen weichen ab: {errors:?}");
+    }
+
+    #[test]
+    fn char_bounds_use_word_boxes_and_fill_spaces() {
+        let chars: Vec<char> = "ab cd".chars().collect();
+        // Wortboxen: „ab“ 0–20, „cd“ 30–50; Einzelzeichen unbrauchbar (= Wortbox)
+        let xs = char_bounds(&chars, 0.0, 50.0, |a, b| match (a, b) {
+            (0, 2) | (0, 1) | (1, 2) => Some((0.0, 20.0)),
+            (3, 5) | (3, 4) | (4, 5) => Some((30.0, 50.0)),
+            _ => None,
+        }, |_| 1.0);
+        assert_eq!(xs, vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0]);
+    }
+
+    #[test]
+    fn char_bounds_prefer_plausible_char_boxes() {
+        let chars: Vec<char> = "Wil".chars().collect();
+        let xs = char_bounds(&chars, 0.0, 30.0, |a, b| match (a, b) {
+            (0, 3) => Some((0.0, 30.0)),
+            (1, 2) => Some((18.0, 22.0)),
+            (2, 3) => Some((22.0, 30.0)),
+            _ => None,
+        }, |_| 1.0);
+        assert_eq!(xs, vec![0.0, 18.0, 22.0, 30.0]);
+    }
+
+    #[test]
+    fn char_bounds_weight_by_char_width() {
+        let chars: Vec<char> = "lm".chars().collect();
+        let xs = char_bounds(&chars, 0.0, 40.0, |a, b| (a == 0 && b == 2).then_some((0.0, 40.0)), |c| if c == 'l' { 1.0 } else { 3.0 });
+        assert_eq!(xs, vec![0.0, 10.0, 40.0]);
     }
 }
